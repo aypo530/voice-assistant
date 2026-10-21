@@ -17,8 +17,20 @@ def _flag(name: str, default: str) -> bool:
 
 
 # --- облако (Gemini) ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+def _clean_key(v: str) -> str:
+    """Убирает типичные ошибки вставки: кавычки, пробелы, перевод строки, префикс «GEMINI_API_KEY=»."""
+    v = v.strip().strip("\"'").strip()
+    if "=" in v:
+        v = v.split("=", 1)[1].strip().strip("\"'")
+    return "".join(v.split())
+
+
+GEMINI_API_KEY = _clean_key(os.getenv("GEMINI_API_KEY", ""))
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip()      # «-latest» — псевдоним, не устаревает
+# Если основная модель перегружена или исчерпан её лимит (429/503), пробуем эти (у каждой модели свой лимит)
+GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
+GEMINI_VERTEX_MODEL = os.getenv("GEMINI_VERTEX_MODEL", "gemini-2.5-flash").strip()     # для ключей «AQ.…»
+GEMINI_VERTEX_FALLBACK_MODELS = [m.strip() for m in os.getenv("GEMINI_VERTEX_FALLBACK_MODELS", "gemini-2.5-flash-lite").split(",") if m.strip()]
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001").strip()
 EMBED_DIM = int(os.getenv("EMBED_DIM", "768"))
 CLOUD_TIMEOUT_S = float(os.getenv("CLOUD_TIMEOUT_S", "15"))   # дольше ждать Gemini не имеет смысла: дальше — локальный режим

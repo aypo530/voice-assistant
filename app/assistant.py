@@ -89,7 +89,9 @@ class Assistant:
             cmd, heard, engine = self._understand(sess, now, text, audio, mime)
         except stt_local.STTUnavailable as e:
             return {"ok": False, "transcript": "", "intent": "error", "engine": "local",
-                    "reply": f"Облачное распознавание сейчас недоступно, а локальное не готово ({e}). Напишите запрос текстом."}
+                    "reply": ("Не удалось распознать речь: облако (Gemini) сейчас недоступно. " + llm.fallback_message()
+                              + " Напишите запрос текстом.") if config.MULTI_USER else
+                             f"Облачное распознавание сейчас недоступно, а локальное не готово ({e}). Напишите запрос текстом."}
         except Exception:
             log.exception("Ошибка понимания запроса")
             return {"ok": False, "transcript": "", "intent": "error", "engine": "local",

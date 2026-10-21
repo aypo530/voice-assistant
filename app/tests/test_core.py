@@ -271,6 +271,16 @@ class VoiceEdit(Base):
         self.say("Поставь задачу подписать договор")
         self.assertIn("Отметил", self.say("Отметь её выполненной")["reply"])
 
+    def test_complete_phrasings(self):
+        for ph in ("Задача про договор выполнена", "Поставь галочку у договора", "Отметь галочкой договор",
+                   "Договор сделан", "Выполнено: подписать договор", "Я подписал договор", "Отметь договор"):
+            if config.DATA_FILE.exists():
+                config.DATA_FILE.unlink()
+            storage.init(); self.a = Assistant()
+            self.say("Поставь задачу подписать договор")
+            self.assertIn("Отметил", self.say(ph)["reply"], ph)
+            self.assertEqual([i["status"] for i in storage.all_items("s1")], ["done"], ph)
+
     def test_ambiguous_not_deleted(self):
         self.say("Поставь задачу купить хлеб"); self.say("Поставь задачу купить молоко")
         r = self.say("Удали задачу купить")
@@ -292,6 +302,39 @@ class VoiceEdit(Base):
             self.assertEqual(storage.all_items("s1")[0]["due_time"], "12:00")
         finally:
             config.GEMINI_API_KEY, llm.parse, llm.usable = orig
+
+
+class AQKeyModes(Base):
+    def _run(self, accept):
+        calls = []
+        orig = llm._generate_mode
+        def fake(contents, system, json_mode, vertex):
+            calls.append("vertex" if vertex else "studio")
+            if ("vertex" if vertex else "studio") != accept:
+                raise llm.LLMAuthError("API key not valid")
+            return "ok"
+        llm._generate_mode = fake
+        tok = llm.set_request_key("AQ.testkey")
+        try:
+            llm._mode_ok.clear()
+            return calls, llm._generate(["x"], "s", False), llm.usable()
+        finally:
+            llm._generate_mode = orig; llm._req_key.reset(tok)
+
+    def test_aq_key_studio_works(self):
+        calls, out, usable = self._run("studio")
+        self.assertEqual((calls, out, usable), (["studio"], "ok", True))
+
+    def test_aq_key_falls_back_to_vertex(self):
+        calls, out, usable = self._run("vertex")
+        self.assertEqual((calls, out, usable), (["studio", "vertex"], "ok", True))
+
+    def test_aqiza_key_only_studio(self):
+        tok = llm.set_request_key("AIzaXXXX")
+        try:
+            self.assertEqual(llm._modes(), ["studio"])
+        finally:
+            llm._req_key.reset(tok)
 
 
 class UserKey(Base):

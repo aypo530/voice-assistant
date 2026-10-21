@@ -41,7 +41,7 @@ class LLMAuthError(LLMError):
 
 
 # ---------- состояние облака («предохранитель») ----------
-_COOLDOWN = {"network": 45, "region": 300, "auth": 900, "busy": 60, "error": 30}
+_COOLDOWN = {"network": 15, "region": 300, "auth": 900, "busy": 20, "error": 10}
 _MESSAGES = {
     "no_key": "Ключ Gemini не задан — работаю локально (без облака): понимаю запросы проще, точность ниже.",
     "network": "Нет связи с Gemini (возможно, нужен VPN) — работаю локально: запросы обрабатываются проще, точность ниже.",
@@ -83,10 +83,10 @@ def usable() -> bool:
     return has_key() and time.time() >= _state()["until"]
 
 
-def _mark_down(reason: str) -> None:
+def _mark_down(reason: str, detail: str = "") -> None:
     with _state_lock:
-        _states.setdefault(_kid(), {}).update(reason=reason, until=time.time() + _COOLDOWN.get(reason, 30), checked=True)
-    log.warning("Gemini недоступен (%s), ближайшие %s с работаю локально", reason, _COOLDOWN.get(reason, 30))
+        _states.setdefault(_kid(), {}).update(reason=reason, detail=detail[:160], until=time.time() + _COOLDOWN.get(reason, 30), checked=True)
+    log.warning("Gemini недоступен (%s), ближайшие %s с работаю локально. Причина: %s", reason, _COOLDOWN.get(reason, 30), detail[:300])
 
 
 def _mark_ok() -> None:
@@ -100,7 +100,7 @@ def status() -> dict:
     st = _state()
     if time.time() < st["until"]:
         r = st["reason"] or "error"
-        return {"state": "down", "reason": r, "message": _MESSAGES.get(r, _MESSAGES["error"])}
+        return {"state": "down", "reason": r, "message": _MESSAGES.get(r, _MESSAGES["error"]), "detail": st.get("detail", "")}
     return {"state": "ok" if st["checked"] else "unknown", "message": ""}
 
 
@@ -146,21 +146,53 @@ def _reason_of(err: LLMError) -> str:
 
 # ---------- клиент ----------
 _clients: dict = {}
-_model = None
+_model: dict = {}          # рабочая модель: отдельно для ключей AI Studio («AIza…») и Vertex Express («AQ.…»)
 
 
-def _get_client():
+_mode_ok: dict = {}        # ключ → режим, в котором он сработал: "studio" (AI Studio) или "vertex" (Vertex Express)
+
+
+def _is_vertex_key(key: str) -> bool:
+    return key.startswith("AQ.")
+
+
+def _modes() -> list:
+    """Ключ «AQ.…» бывает двух видов: новый ключ AI Studio и ключ Vertex Express. Пробуем оба адреса и запоминаем рабочий."""
+    key = current_key()
+    if not _is_vertex_key(key):
+        return ["studio"]
+    ok = _mode_ok.get(key)
+    return [ok] + [m for m in ("studio", "vertex") if m != ok] if ok else ["studio", "vertex"]
+
+
+def _models(vertex: bool = False) -> list:
+    """Основная модель и запасные (у каждой модели свой лимит). Имена моделей в Vertex другие."""
+    if vertex:
+        names = [config.GEMINI_VERTEX_MODEL] + config.GEMINI_VERTEX_FALLBACK_MODELS
+    else:
+        names = [config.GEMINI_MODEL] + config.GEMINI_FALLBACK_MODELS
+    ok = _model.get(vertex)
+    return ([ok] if ok else []) + [n for n in names if n != ok]
+
+
+def _get_client(vertex: Optional[bool] = None):
     key = current_key()
     if not key:
         raise LLMConfigError("Не задан ключ Gemini.")
-    client = _clients.get(key)
+    if vertex is None:
+        vertex = _mode_ok.get(key) == "vertex"
+    client = _clients.get((key, vertex))
     if client is None:
         from google import genai  # ленивый импорт: тесты и локальный режим работают без SDK
         from google.genai import types
         if len(_clients) > 50:
             _clients.clear()
-        client = _clients[key] = genai.Client(api_key=key,
-                                              http_options=types.HttpOptions(timeout=int(config.CLOUD_TIMEOUT_S * 1000)))
+        opts = types.HttpOptions(timeout=int(config.CLOUD_TIMEOUT_S * 1000))
+        if vertex:      # Vertex AI Express: другой адрес API
+            client = genai.Client(vertexai=True, api_key=key, http_options=opts)
+        else:
+            client = genai.Client(api_key=key, http_options=opts)
+        _clients[(key, vertex)] = client
     return client
 
 
@@ -168,7 +200,7 @@ def _discover_model() -> Optional[str]:
     """Если настроенная модель снята с поддержки — берём самую новую доступную flash-модель."""
     bad = ("image", "tts", "live", "audio", "embedding", "robotics", "computer")
     names = []
-    for m in _get_client().models.list():
+    for m in _get_client(False).models.list():
         n = (m.name or "").removeprefix("models/")
         actions = getattr(m, "supported_actions", None) or []
         if "flash" in n and "lite" not in n and not any(b in n for b in bad) and (not actions or "generateContent" in actions):
@@ -178,39 +210,69 @@ def _discover_model() -> Optional[str]:
 
 
 def _generate(contents: list, system: str, json_mode: bool = True) -> str:
-    global _model
+    """Пробует доступные адреса API (для ключей «AQ.…» их два). Переходит к следующему только при отказе по ключу."""
+    last: Optional[LLMError] = None
+    for mode in _modes():
+        try:
+            text = _generate_mode(contents, system, json_mode, mode == "vertex")
+            _mode_ok[current_key()] = mode
+            _mark_ok()
+            return text
+        except LLMAuthError as e:
+            last = e
+            log.info("Ключ не принят в режиме %s: %s", mode, str(e)[:200])
+            continue
+        except LLMError as e:
+            last = e
+            break
+    assert last is not None
+    _mark_down(_reason_of(last), str(last))
+    raise last
+
+
+def _generate_mode(contents: list, system: str, json_mode: bool, vertex: bool) -> str:
     from google.genai import types
-    model = _model or config.GEMINI_MODEL
     cfg = types.GenerateContentConfig(system_instruction=system, temperature=0.1,
                                       response_mime_type="application/json" if json_mode else None)
+    queue = _models(vertex)
     last: Optional[LLMError] = None
-    for attempt in range(3):
-        try:
-            resp = _get_client().models.generate_content(model=model, contents=contents, config=cfg)
-            _model = model
-            _mark_ok()
-            return resp.text or ""
-        except LLMConfigError:
-            raise
-        except Exception as e:  # google.genai.errors.APIError, httpx-ошибки
-            last = _classify(e)
-            if isinstance(last, (LLMNetworkError, LLMRegionError, LLMAuthError)):
-                break                                   # повторять бессмысленно
-            if getattr(e, "code", None) == 404:         # модель снята — ищем доступную
-                try:
-                    new_model = _discover_model()
-                except Exception:
-                    new_model = None
-                if not new_model or new_model == model:
+    tried_discover = False
+    while queue:
+        model = queue.pop(0)
+        for attempt in range(3):
+            try:
+                resp = _get_client(vertex).models.generate_content(model=model, contents=contents, config=cfg)
+                _model[vertex] = model
+                return resp.text or ""
+            except LLMConfigError:
+                raise
+            except Exception as e:  # google.genai.errors.APIError, httpx-ошибки
+                last = _classify(e)
+                code = getattr(e, "code", None)
+                if isinstance(last, (LLMRegionError, LLMAuthError)):
+                    queue.clear()
+                    break                               # другая модель не поможет
+                if isinstance(last, LLMNetworkError):
+                    queue.clear()                       # таймаут/нет сети: не ждём повторно, сразу локальный режим
                     break
-                log.warning("Модель %s недоступна, переключаюсь на %s", model, new_model)
-                model = new_model
-            elif attempt < 2 and (getattr(e, "code", None) in (429, 500, 502, 503, 504) or getattr(e, "code", None) is None):
-                time.sleep(1.0 * (attempt + 1))
-            else:
+                if code == 404:                         # модель снята — ищем доступную
+                    if not tried_discover and not vertex:
+                        tried_discover = True
+                        try:
+                            found = _discover_model()
+                        except Exception:
+                            found = None
+                        if found and found != model:
+                            log.warning("Модель %s недоступна, пробую %s", model, found)
+                            queue.insert(0, found)
+                    break
+                if code in (429, 500, 502, 503, 504) and attempt == 0:
+                    time.sleep(1.0)                     # короткий повтор, потом — другая модель
+                    continue
                 break
+        else:
+            continue
     assert last is not None
-    _mark_down(_reason_of(last))
     raise last
 
 
@@ -234,7 +296,7 @@ def check_key(key: str) -> dict:
             _generate(["Ответь одним словом: ok"], "Отвечай одним словом.", json_mode=False)
             return {"state": "ok", "message": "Ключ принят. Облачный режим включён."}
         except LLMAuthError:
-            return {"state": "auth", "message": "Ключ отклонён Gemini. Проверьте, что он скопирован полностью."}
+            return {"state": "auth", "message": "Ключ отклонён Gemini. Проверьте, что он скопирован полностью. (" + status().get("detail", "")[:140] + ")"}
         except LLMError:
             return {"state": "down", "message": status().get("message") or "Не удалось связаться с Gemini."}
     finally:
@@ -328,6 +390,6 @@ def embed(texts: list, query: bool = False) -> list:
     except Exception as e:
         err = _classify(e)
         if isinstance(err, (LLMNetworkError, LLMRegionError, LLMAuthError)):
-            _mark_down(_reason_of(err))
+            _mark_down(_reason_of(err), str(err))
         raise err from e
     return out

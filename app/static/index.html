@@ -155,7 +155,7 @@ async function loadMode() {
       box.className = 'mode cloud'; tx.textContent = '☁️ Облачный режим (Gemini): максимальная точность. Если Gemini станет недоступен, ассистент сам переключится на локальный режим.';
     } else {
       box.className = 'mode local';
-      let t = '💻 Локальный режим. ' + h.cloud.message;
+      let t = '💻 Локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
       tx.textContent = t;
     }
   } catch (e) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; }
