@@ -9,11 +9,11 @@
 @media (prefers-color-scheme:dark){:root{--bg:#10131a;--card:#181c26;--text:#e7eaf2;--muted:#8d95a8;--line:#272d3b;--me:#1e2c4d;--bot:#222838;--warn:#f0c060;--warnbg:#3a2f14}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-.wrap{max-width:1040px;margin:0 auto;padding:12px 16px 16px;display:grid;gap:12px;grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);height:100dvh}
+.wrap{max-width:1040px;margin:0 auto;padding:12px 16px 16px;display:grid;gap:12px;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:100dvh}
 .mode{grid-column:1/-1;font-size:13px;padding:7px 12px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--muted)}
 .mode.cloud{color:var(--ok)}.mode.local{background:var(--warnbg);color:var(--warn);border-color:transparent}
-.main{display:grid;gap:12px;grid-template-columns:1fr;min-height:0;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
-@media(min-width:860px){.main{grid-template-columns:3fr 2fr;grid-template-rows:minmax(0,1fr)}}
+.main{display:grid;gap:12px;grid-template-columns:minmax(0,1fr);min-height:0;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+@media(min-width:860px){.main{grid-template-columns:minmax(0,3fr) minmax(0,2fr);grid-template-rows:minmax(0,1fr)}}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
 h1{font-size:17px;margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
 h1 label{font-size:13px;font-weight:400;color:var(--muted);cursor:pointer;white-space:nowrap}
@@ -53,6 +53,17 @@ button.sm{padding:7px 12px;font-size:14px;border-radius:9px}
 #keybox .row{justify-content:flex-end;flex-wrap:wrap}#keybox a{color:var(--accent)}
 .mode{display:flex;gap:10px;align-items:center;justify-content:space-between}.mode span{flex:1}
 .mode button{padding:3px 10px;font-size:12px;border-radius:8px;white-space:nowrap}
+#cmds{border-top:1px solid var(--line);padding:6px 12px;font-size:13px;color:var(--muted)}
+#cmds summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
+#cmds,#cmds .line,#cmds .chips{min-width:0}
+#cmds .chips{flex:1}
+#cmds .line{display:flex;align-items:center;gap:8px;margin:3px 0}
+#cmds .grp{flex:0 0 78px;font-size:12px;color:var(--muted)}
+#cmds .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:3px;scrollbar-width:thin}
+#cmds .chip{flex:0 0 auto;white-space:nowrap;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:4px 10px;font-size:13px;font-weight:400}
+#cmds .chip:hover{border-color:var(--accent);color:var(--accent)}
+#log{min-height:120px}
+#cmdbody{max-height:34vh;overflow-y:auto}
 a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
 </style>
 </head>
@@ -62,7 +73,11 @@ a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
   <div class="main">
   <section class="card">
     <h1>🎙️ Голосовой ассистент <label><input type="checkbox" id="tts" checked> озвучивать ответы</label></h1>
-    <div id="log"><div class="hint">Нажмите микрофон и скажите, например:<br>«Напомни завтра в 10 утра позвонить Ивану»<br>«Что у меня сегодня?» · «Найди задачу про договор»<br>«Отметь задачу про договор выполненной»</div></div>
+    <div id="log"><div class="hint">Нажмите микрофон или напишите запрос своими словами. Примеры команд — ниже, нажмите на любой.</div></div>
+    <details id="cmds" open>
+      <summary>💡 Что можно сказать</summary>
+      <div id="cmdbody"></div>
+    </details>
     <div class="bar">
       <div class="meter"><i id="level"></i></div>
       <div id="status"></div>
@@ -180,6 +195,30 @@ function speak(text) {
   const u = new SpeechSynthesisUtterance(text.replace(/[•]/g, '').replace(/\n+/g, '. '));
   u.lang = 'ru-RU'; const v = pickVoice(); if (v) u.voice = v; speechSynthesis.speak(u);
 }
+
+// ---------- подсказки: доступные команды всегда на виду ----------
+const COMMANDS = [
+  ['Создать', ['Напомни завтра в 10 утра позвонить Ивану', 'В пятницу нужно отправить отчёт', 'Поставь задачу купить билеты до конца недели', 'Добавь встречу с командой завтра в 15:00']],
+  ['Посмотреть', ['Что у меня сегодня?', 'Какие задачи на завтра?', 'Покажи мои встречи на эту неделю']],
+  ['Найти', ['Найди задачу про договор', 'Когда у меня была встреча с Иваном?']],
+  ['Изменить', ['Перенеси встречу с командой на пятницу в 11', 'А перенеси её на завтра', 'Отметь задачу про договор выполненной', 'Удали последнюю запись']],
+];
+(function () {
+  const box = $('cmdbody');
+  COMMANDS.forEach(([name, list]) => {
+    const line = document.createElement('div'); line.className = 'line';
+    const g = document.createElement('div'); g.className = 'grp'; g.textContent = name; line.appendChild(g);
+    const row = document.createElement('div'); row.className = 'chips';
+    list.forEach(t => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = t;
+      b.onclick = () => { $('text').value = t; $('text').focus(); };      // подставляет фразу в поле: можно поправить и отправить
+      row.appendChild(b);
+    });
+    line.appendChild(row); box.appendChild(line);
+  });
+  try { if (localStorage.cmds === '0') $('cmds').open = false; } catch (e) {}
+  $('cmds').addEventListener('toggle', () => { try { localStorage.cmds = $('cmds').open ? '1' : '0'; } catch (e) {} });
+})();
 
 // ---------- чат ----------
 function addMsg(role, text, tag) {
