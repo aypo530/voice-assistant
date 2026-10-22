@@ -30,6 +30,10 @@ HELP = ("Я умею добавлять задачи, напоминания и 
         "переносить и удалять их, отмечать задачи выполненными.")
 
 
+class OnlineUnavailable(Exception):
+    """Выбран строго онлайн-режим, а Gemini недоступен: молча уходить в офлайн нельзя."""
+
+
 def _tz(name: Optional[str]):
     for candidate in (name, config.DEFAULT_TZ):
         try:
@@ -66,11 +70,18 @@ class Assistant:
     # ---------- понимание запроса ----------
     def _understand(self, sess: Session, now: datetime, text, audio, mime):
         """Возвращает (команда, расшифровка, режим 'cloud'|'local'). Бросает stt_local.STTUnavailable."""
+        mode = llm.current_mode()
+        if mode == "online" and not llm.has_key():
+            raise OnlineUnavailable("Выбран онлайн-режим, но ключ Gemini не задан. Введите ключ (кнопка «🔑 Ключ») или выберите режим «Авто» или «Офлайн».")
+        if mode == "online" and not llm.usable():
+            raise OnlineUnavailable("Онлайн-режим: Gemini сейчас недоступен. " + llm.fallback_message() + " Подождите немного или выберите «Авто» или «Офлайн».")
         if llm.usable():
             try:
                 cmd = llm.parse(now, list(sess.history), text=text, audio=audio, mime=mime)
                 return cmd, (cmd.transcript or text or "").strip(), "cloud"
             except llm.LLMError as e:
+                if mode == "online":
+                    raise OnlineUnavailable("Онлайн-режим: Gemini не ответил. " + llm.fallback_message() + " Выберите «Авто» или «Офлайн».") from e
                 log.warning("Облако не сработало (%s) — перехожу на локальный режим", e)
         if audio:
             heard = stt_local.transcribe(audio, mime)
@@ -87,7 +98,12 @@ class Assistant:
         sess = self._session(session_id)
         try:
             cmd, heard, engine = self._understand(sess, now, text, audio, mime)
+        except OnlineUnavailable as e:
+            return {"ok": False, "transcript": "", "intent": "error", "engine": "cloud", "reply": str(e)}
         except stt_local.STTUnavailable as e:
+            if llm.current_mode() == "offline":
+                return {"ok": False, "transcript": "", "intent": "error", "engine": "local",
+                        "reply": f"Офлайн-распознавание речи не готово ({e}). Напишите запрос текстом или выберите режим «Авто»."}
             return {"ok": False, "transcript": "", "intent": "error", "engine": "local",
                     "reply": ("Не удалось распознать речь: облако (Gemini) сейчас недоступно. " + llm.fallback_message()
                               + " Напишите запрос текстом.") if config.MULTI_USER else

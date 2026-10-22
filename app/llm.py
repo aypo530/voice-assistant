@@ -57,6 +57,18 @@ _states: dict = {}
 _state_lock = threading.Lock()
 
 
+_req_mode: "contextvars.ContextVar[str]" = contextvars.ContextVar("assistant_mode", default="auto")
+MODES = ("auto", "online", "offline")      # auto — облако, при сбое локально; online — только облако; offline — только локально
+
+
+def set_request_mode(mode: Optional[str]):
+    return _req_mode.set(mode if mode in MODES else "auto")
+
+
+def current_mode() -> str:
+    return _req_mode.get()
+
+
 def set_request_key(key: Optional[str]):
     return _req_key.set((key or "").strip()[:200])
 
@@ -80,7 +92,7 @@ def has_key() -> bool:
 
 def usable() -> bool:
     """Можно ли сейчас пробовать облако."""
-    return has_key() and time.time() >= _state()["until"]
+    return has_key() and current_mode() != "offline" and time.time() >= _state()["until"]
 
 
 def _mark_down(reason: str, detail: str = "") -> None:
@@ -95,6 +107,8 @@ def _mark_ok() -> None:
 
 
 def status() -> dict:
+    if current_mode() == "offline":
+        return {"state": "offline", "message": "Офлайн-режим выбран вручную: всё обрабатывается на сервере без Gemini, точность ниже."}
     if not has_key():
         return {"state": "no_key", "message": _MESSAGES["no_key"]}
     st = _state()

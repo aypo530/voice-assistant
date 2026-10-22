@@ -337,6 +337,41 @@ class AQKeyModes(Base):
             llm._req_key.reset(tok)
 
 
+class UserMode(Base):
+    def setUp(self):
+        super().setUp()
+        self._orig = (config.GEMINI_API_KEY, llm.parse)
+        config.GEMINI_API_KEY = "k"
+        self.calls = []
+        def fake(now, h, text=None, audio=None, mime=""):
+            self.calls.append(text)
+            return Command(intent="create", kind="task", title="Облачная задача", transcript=text)
+        llm.parse = fake
+        llm._states.clear()
+
+    def tearDown(self):
+        config.GEMINI_API_KEY, llm.parse = self._orig
+        llm._req_mode.set("auto")
+
+    def test_offline_never_calls_cloud(self):
+        llm._req_mode.set("offline")
+        r = self.say("Поставь задачу купить хлеб")
+        self.assertEqual((r["engine"], self.calls), ("local", []))
+        self.assertEqual(llm.status()["state"], "offline")
+
+    def test_auto_uses_cloud(self):
+        llm._req_mode.set("auto")
+        self.assertEqual(self.say("Поставь задачу купить хлеб")["engine"], "cloud")
+
+    def test_online_does_not_silently_fall_back(self):
+        llm._req_mode.set("online")
+        def down(*a, **k): raise llm.LLMNetworkError("нет сети")
+        llm.parse = down
+        r = self.say("Поставь задачу купить хлеб")
+        self.assertFalse(r["ok"]); self.assertEqual(storage.all_items("s1"), [])
+        self.assertIn("Онлайн", r["reply"])
+
+
 class UserKey(Base):
     def test_user_key_has_priority_and_isolated_state(self):
         tok = llm.set_request_key("user-key")

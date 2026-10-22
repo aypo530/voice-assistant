@@ -52,6 +52,7 @@ button.sm{padding:7px 12px;font-size:14px;border-radius:9px}
 #keybox input{width:100%;margin-bottom:8px}#keymsg{font-size:13px;min-height:18px;margin-bottom:8px}
 #keybox .row{justify-content:flex-end;flex-wrap:wrap}#keybox a{color:var(--accent)}
 .mode{display:flex;gap:10px;align-items:center;justify-content:space-between}.mode span{flex:1}
+.mode select{padding:3px 6px;font-size:12px;border-radius:8px;background:var(--bg);color:var(--text);border:1px solid var(--line)}
 .mode button{padding:3px 10px;font-size:12px;border-radius:8px;white-space:nowrap}
 #cmds{border-top:1px solid var(--line);padding:6px 12px;font-size:13px;color:var(--muted)}
 #cmds summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
@@ -80,7 +81,7 @@ a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
 </head>
 <body>
 <div class="wrap">
-  <div id="mode" class="mode"><span id="modetext">Проверяю режим работы…</span><button class="ghost" id="keybtn" title="Ключ Gemini API">🔑 Ключ</button></div>
+  <div id="mode" class="mode"><span id="modetext">Проверяю режим работы…</span><select id="modesel" title="Режим работы"><option value="auto">Авто</option><option value="online">Онлайн</option><option value="offline">Офлайн</option></select><button class="ghost" id="keybtn" title="Ключ Gemini API">🔑 Ключ</button></div>
   <div class="main">
   <section class="card">
     <h1>🎙️ Голосовой ассистент <label><input type="checkbox" id="tts" checked> озвучивать ответы</label></h1>
@@ -133,8 +134,12 @@ let cancelled = false, busy = false, rec = null, stream = null, chunks = [], tim
 let items = [], searchMode = '', editing = null;
 
 // ---------- ключ Gemini (хранится только в браузере) ----------
+// ---------- режим: авто / онлайн / офлайн (выбор пользователя) ----------
+const getMode = () => { try { return ['auto', 'online', 'offline'].includes(localStorage.mode) ? localStorage.mode : 'auto'; } catch (e) { return 'auto'; } };
+$('modesel').value = getMode();
+$('modesel').onchange = e => { try { localStorage.mode = e.target.value; } catch (err) {} loadMode(); };
 const getKey = () => { try { return localStorage.gkey || ''; } catch (e) { return ''; } };
-const gkeyHeader = () => getKey() ? {'X-Gemini-Key': getKey()} : {};
+const gkeyHeader = () => ({'X-Mode': getMode(), ...(getKey() ? {'X-Gemini-Key': getKey()} : {})});
 function openKeyDialog() {
   $('keyin').value = ''; $('keymsg').textContent = ''; $('keyclear').style.display = getKey() ? '' : 'none';
   $('keyin').placeholder = getKey() ? 'Ключ сохранён — введите новый, чтобы заменить' : 'AIza…';
@@ -162,7 +167,7 @@ $('keyok').onclick = async () => {
 $('keyin').addEventListener('keydown', e => { if (e.key === 'Enter') $('keyok').click(); });
 window.addEventListener('load', () => {
   let skipped = false; try { skipped = !!sessionStorage.gskip; } catch (e) {}
-  if (!getKey() && !skipped) openKeyDialog();
+  if (!getKey() && !skipped && getMode() !== 'offline') openKeyDialog();
 });
 
 async function api(path, opts = {}) {
@@ -177,12 +182,17 @@ async function loadMode() {
   const box = $('mode'), tx = $('modetext');
   try {
     const h = await api('/api/health');
-    if (h.cloud.state === 'ok' || h.cloud.state === 'unknown') {
-      box.className = 'mode cloud'; tx.textContent = '☁️ Облачный режим (Gemini): максимальная точность. Если Gemini станет недоступен, ассистент сам переключится на локальный режим.';
+    const m = getMode(), up = h.cloud.state === 'ok' || h.cloud.state === 'unknown';
+    if (m === 'offline') {
+      box.className = 'mode local'; tx.textContent = '💻 Офлайн-режим (выбран вами): Gemini не используется, запросы обрабатываются на сервере правилами и локальной моделью речи. Точность ниже.';
+    } else if (m === 'online') {
+      if (up) { box.className = 'mode cloud'; tx.textContent = '☁️ Онлайн-режим (Gemini): максимальная точность. Если Gemini недоступен, ассистент сообщит об этом и не будет переключаться сам.'; }
+      else { box.className = 'mode local'; tx.textContent = '⚠️ Онлайн-режим выбран, но Gemini недоступен. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '') + ' Выберите «Авто» или «Офлайн».'; }
+    } else if (up) {
+      box.className = 'mode cloud'; tx.textContent = '☁️ Авто: облачный режим (Gemini), максимальная точность. Если Gemini станет недоступен, ассистент сам переключится на локальный режим.';
     } else {
       box.className = 'mode local';
-      let t = '💻 Локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
-      tx.textContent = t;
+      tx.textContent = '💻 Авто: локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
     }
   } catch (e) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; }
 }

@@ -55,7 +55,8 @@ class UserKeyMiddleware:
             for k, v in scope.get("headers", []):
                 if k == b"x-gemini-key":
                     llm.set_request_key(v.decode("latin-1"))
-                    break
+                elif k == b"x-mode":
+                    llm.set_request_mode(v.decode("latin-1").strip().lower())
         await self.inner(scope, receive, send)
 
 
@@ -88,7 +89,7 @@ def index():
 @app.get("/api/health")
 def health():
     cloud = llm.status()
-    return {"status": "ok", "cloud": cloud, "server_key": bool(config.GEMINI_API_KEY), "local_stt": stt_local.state(),
+    return {"status": "ok", "cloud": cloud, "mode": llm.current_mode(), "server_key": bool(config.GEMINI_API_KEY), "local_stt": stt_local.state(),
             "local_embed": search.local_state(), "multi_user": config.MULTI_USER}
 
 
