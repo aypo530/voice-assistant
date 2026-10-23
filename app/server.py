@@ -86,6 +86,20 @@ def index():
     return FileResponse(config.RESOURCE_DIR / "static" / "index.html", headers={"Cache-Control": "no-store"})
 
 
+_STATIC = config.RESOURCE_DIR / "static"
+
+
+@app.get("/offline.js")
+def offline_js():
+    return FileResponse(_STATIC / "offline.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(_STATIC / "sw.js", media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
 @app.get("/api/health")
 def health():
     cloud = llm.status()
@@ -165,6 +179,44 @@ def delete_item(item_id: int, request: Request):
     except storage.StorageError as e:
         raise HTTPException(500, str(e))
     return {"ok": True}
+
+
+class ImportRow(BaseModel):
+    kind: str
+    title: str
+    date: Optional[str] = None
+    time: Optional[str] = None
+    status: Optional[str] = "open"
+    created_at: Optional[str] = ""
+
+
+class ImportIn(BaseModel):
+    items: list[ImportRow]
+
+
+@app.post("/api/import")
+def import_items(body: ImportIn, request: Request):
+    """Принимает записи, созданные без связи (или восстановленные из копии на устройстве). Дубликаты пропускаются."""
+    uid = _uid(request)
+    added = skipped = 0
+    for it in body.items[:300]:
+        title = (it.title or "").strip()[:300]
+        date = it.date if it.date and re.fullmatch(r"\d{4}-\d{2}-\d{2}", it.date) else None
+        time = it.time if it.time and re.fullmatch(r"\d{2}:\d{2}", it.time) else None
+        if it.kind not in ("task", "reminder", "meeting") or not title:
+            skipped += 1
+            continue
+        try:
+            if storage.find_duplicate(uid, it.kind, title, date, time):
+                skipped += 1
+                continue
+            row = storage.add_item(uid, it.kind, title, date, time, it.created_at or "")
+            if it.status == "done":
+                storage.update(uid, row["id"], status="done")
+            added += 1
+        except storage.StorageError as e:
+            raise HTTPException(500, str(e))
+    return {"added": added, "skipped": skipped}
 
 
 @app.get("/api/export.csv")

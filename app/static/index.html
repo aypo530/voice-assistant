@@ -102,7 +102,7 @@ a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
     </div>
   </section>
   <section class="card">
-    <h1>Мои записи <a class="exp" href="#" id="exp" title="Те же данные лежат в файле assistant_data.csv">скачать CSV</a></h1>
+    <h1>Мои записи <a class="exp" href="#" id="exp" title="Скачать/дополнить файл с записями">скачать CSV</a></h1>
     <div class="tools">
       <input type="text" id="q" placeholder="Поиск по смыслу…" autocomplete="off">
       <select id="flt"><option value="all">Все</option><option value="open">Открытые</option><option value="done">Выполненные</option></select>
@@ -124,6 +124,7 @@ a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
     <button id="keyok">Сохранить</button>
   </div>
 </dialog>
+<script src="/offline.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const sid = localStorage.sid || (localStorage.sid = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)));
@@ -167,21 +168,63 @@ $('keyok').onclick = async () => {
 $('keyin').addEventListener('keydown', e => { if (e.key === 'Enter') $('keyok').click(); });
 window.addEventListener('load', () => {
   let skipped = false; try { skipped = !!sessionStorage.gskip; } catch (e) {}
-  if (!getKey() && !skipped && getMode() !== 'offline') openKeyDialog();
+  if (!getKey() && !skipped && getMode() !== 'offline' && navigator.onLine !== false) openKeyDialog();
 });
 
+// ---------- автономный режим: при потере связи с сервером всё работает прямо в браузере ----------
+let restoreDone = false, deviceMode = false, probeTimer = null, syncing = false;
+const netErr = e => e && (e.name === 'TypeError' || e.name === 'AbortError');
+function fetchT(path, init, ms) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  return fetch(path, {...init, signal: c.signal}).finally(() => clearTimeout(t));
+}
+const authHeaders = () => ({'X-Session-Id': sid, ...gkeyHeader()});
+function enterDevice() {
+  if (deviceMode) return;
+  deviceMode = true; loadMode();
+  if (!probeTimer) probeTimer = setInterval(probeServer, 8000);
+}
+async function probeServer() {
+  try { const r = await fetchT('/api/health', {headers: authHeaders()}, 5000); if (!r.ok) return; } catch (e) { return; }
+  await trySync();
+}
+async function trySync() {
+  if (syncing) return; syncing = true;
+  try {
+    let n = 0;
+    try { n = await Offline.sync((p, i) => fetchT(p, {...i, headers: {...authHeaders(), ...((i && i.headers) || {})}}, 15000)); }
+    catch (e) { return; }                              // не вышло — остаёмся автономно и повторим позже
+    const was = deviceMode;
+    deviceMode = false; if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
+    if (n) addMsg('bot', 'Связь восстановлена. Записи, сделанные без связи, отправлены на сервер: ' + n + '.');
+    else if (was) addMsg('bot', 'Связь с сервером восстановлена.');
+    loadMode(); loadItems();
+  } finally { syncing = false; }
+}
 async function api(path, opts = {}) {
-  const r = await fetch(path, {...opts, headers: {'X-Session-Id': sid, ...gkeyHeader(), ...(opts.headers || {})}});
+  if (deviceMode) return Offline.call(path, opts);
+  const ms = path.startsWith('/api/voice') ? 30000 : path.startsWith('/api/health') ? 6000 : 15000;
+  let r;
+  try { r = await fetchT(path, {...opts, headers: {'X-Session-Id': sid, ...gkeyHeader(), ...(opts.headers || {})}}, ms); }
+  catch (e) { if (netErr(e)) { enterDevice(); return Offline.call(path, opts); } throw e; }
+  if (r.status === 502 || r.status === 503 || r.status === 504) { enterDevice(); return Offline.call(path, opts); }
   let data = null; try { data = await r.json(); } catch (e) {}
   if (!r.ok) throw new Error((data && data.detail) || 'Ошибка сервера');
   return data;
 }
+window.addEventListener('online', () => { if (deviceMode) probeServer(); });
+window.addEventListener('offline', () => enterDevice());
 
 // ---------- режим работы ----------
 async function loadMode() {
   const box = $('mode'), tx = $('modetext');
   try {
     const h = await api('/api/health');
+    if (deviceMode || h.device) {
+      box.className = 'mode local';
+      tx.textContent = '📴 Нет связи с сервером — работаю автономно на этом устройстве: записи хранятся здесь и отправятся на сервер, когда связь появится. Точность ниже, голосовой ввод ограничен.';
+      return;
+    }
     const m = getMode(), up = h.cloud.state === 'ok' || h.cloud.state === 'unknown';
     if (m === 'offline') {
       box.className = 'mode local'; tx.textContent = '💻 Офлайн-режим (выбран вами): Gemini не используется, запросы обрабатываются на сервере правилами и локальной моделью речи. Точность ниже.';
@@ -196,11 +239,69 @@ async function loadMode() {
     }
   } catch (e) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; }
 }
+// ---------- файл с записями: всегда один, новые записи дописываются ----------
+function idb() { return new Promise((res, rej) => { const q = indexedDB.open('assistant', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function idbGet(k) { try { const d = await idb(); return await new Promise(r => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => r(q.result); q.onerror = () => r(null); }); } catch (e) { return null; } }
+async function idbSet(k, v) { try { const d = await idb(); await new Promise(r => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = r; t.onerror = r; }); } catch (e) {} }
+async function currentCsv() {
+  try {
+    if (deviceMode) throw new Error('device');
+    const r = await fetchT('/api/export.csv', {headers: {'X-Session-Id': sid}}, 15000);
+    if (!r.ok) throw new Error('http');
+    return await r.text();
+  } catch (err) { return Offline.csv(); }          // без связи — из записей на устройстве
+}
+function pickFileText() {
+  return new Promise(res => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.csv,text/csv';
+    inp.onchange = async () => res(inp.files[0] ? await inp.files[0].text() : null);
+    inp.oncancel = () => res(null); inp.click();
+  });
+}
+function downloadText(text) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type: 'text/csv;charset=utf-8'}));
+  a.download = 'assistant_items.csv'; a.click();
+}
+async function pullIntoApp(rows, mine) {            // записи из файла, которых нет в приложении, добавляем и сюда
+  const have = new Set(mine.map(r => [r.kind, r.title.trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|')));
+  const extra = rows.filter(r => !have.has([r.kind, r.title.trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|')));
+  if (!extra.length) return 0;
+  if (deviceMode) return Offline.addRows(extra);
+  const r = await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({items: extra.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})});
+  return r.added || 0;
+}
 $('exp').onclick = async e => {
   e.preventDefault();
-  const r = await fetch('/api/export.csv', {headers: {'X-Session-Id': sid}});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = 'assistant_items.csv'; a.click();
+  const text = await currentCsv(), mine = Offline.parseCsv(text);
+  let res = null, how = '';
+  try {
+    if (window.showSaveFilePicker) {                // компьютер: выбираем файл один раз, дальше дописываем в него сами
+      let h = await idbGet('fh');
+      if (h) { let p = await h.queryPermission({mode: 'readwrite'}); if (p !== 'granted') p = await h.requestPermission({mode: 'readwrite'}); if (p !== 'granted') h = null; }
+      if (!h) {
+        h = await window.showSaveFilePicker({suggestedName: 'assistant_items.csv', types: [{description: 'CSV', accept: {'text/csv': ['.csv']}}]});
+        await idbSet('fh', h);
+      }
+      res = Offline.mergeCsv(await (await h.getFile()).text(), mine);
+      const w = await h.createWritable(); await w.write(res.text); await w.close();
+      how = 'Файл «' + h.name + '» дополнен';
+    } else {                                        // телефон и другие браузеры: выбираем прежний файл, скачиваем объединённый
+      let old = '';
+      if (confirm('Дополнить ранее скачанный файл?\n\nОК — выбрать его (новые записи добавятся к старым).\nОтмена — скачать новый файл.')) old = (await pickFileText()) || '';
+      res = Offline.mergeCsv(old, mine); downloadText(res.text);
+      how = old ? 'Файл дополнен и скачан (старую копию можно удалить)' : 'Файл скачан';
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    downloadText(text); addMsg('bot', 'Не удалось дополнить файл, скачан обычный. ' + (err && err.message || '')); return;
+  }
+  let pulled = 0; try { pulled = await pullIntoApp(res.rows, mine); } catch (err) {}
+  addMsg('bot', how + ': в нём ' + res.rows.length + ' записей, добавлено из приложения ' + res.added + (pulled ? ', из файла в приложение ' + pulled : '') + '.');
+  if (pulled) loadItems();
 };
+window.addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; return ''; });   // закрыть страницу случайно нельзя
+
 
 // ---------- озвучка (локальные голоса браузера в приоритете) ----------
 $('tts').checked = localStorage.tts !== '0';
@@ -275,7 +376,21 @@ async function loadItems() {
   try {
     const q = $('q').value.trim();
     if (q) { const r = await api('/api/search?q=' + encodeURIComponent(q)); items = r.items; searchMode = r.mode; }
-    else { items = await api('/api/items'); searchMode = ''; }
+    else {
+      items = await api('/api/items'); searchMode = '';
+      if (!deviceMode && !restoreDone && Array.isArray(items)) {      // сервер мог перезапуститься и забыть записи — вернём их из копии на устройстве
+        restoreDone = true;
+        const lost = Offline.pendingChanges() ? [] : Offline.missingOnServer(items);
+        if (lost.length) {
+          try {
+            await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({items: lost.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})});
+            items = await api('/api/items'); addMsg('bot', 'Сервер был перезапущен — я вернул ваши записи из копии на этом устройстве: ' + lost.length + '.');
+          } catch (e) {}
+        }
+      }
+      if (!deviceMode) Offline.seed(items);
+    }
     renderItems();
   } catch (e) {}
 }
@@ -395,7 +510,21 @@ async function onRecStop() {
 }
 $('cancel').onclick = () => { cancelled = true; stopRec(); };
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && rec) { cancelled = true; stopRec(); } });
-$('mic').onclick = () => rec ? stopRec() : (!busy && startRec());
+function deviceVoice() {
+  // Без связи с сервером остаётся только распознавание самого браузера (на части устройств оно работает локально).
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { addMsg('bot', 'В этом браузере нет распознавания речи без связи с сервером. Напишите запрос текстом.'); return; }
+  const r = new SR(); r.lang = 'ru-RU'; r.interimResults = false; r.maxAlternatives = 1;
+  try { r.processLocally = true; } catch (e) {}
+  setStatus('Слушаю…');
+  r.onresult = ev => { $('text').value = ev.results[0][0].transcript; sendText(); };
+  r.onerror = ev => addMsg('bot', 'Не удалось распознать речь без связи (' + ev.error + '). Напишите запрос текстом.');
+  r.onend = () => setStatus('');
+  try { r.start(); } catch (e) { addMsg('bot', 'Не удалось включить микрофон. Напишите запрос текстом.'); }
+}
+$('mic').onclick = () => rec ? stopRec() : (!busy && (deviceMode ? deviceVoice() : startRec()));
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if (Offline.pendingChanges()) trySync();
 if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => {};
 loadItems(); loadMode(); setInterval(loadMode, 20000);
 </script>
