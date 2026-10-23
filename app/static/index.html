@@ -102,7 +102,7 @@ a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
     </div>
   </section>
   <section class="card">
-    <h1>Мои записи <a class="exp" href="#" id="exp" title="Скачать/дополнить файл с записями">скачать CSV</a></h1>
+    <h1>Мои записи <a class="exp" href="#" id="exp" title="Скачать/дополнить файл с записями">скачать CSV</a> <a class="exp" href="#" id="imp" title="Загрузить записи из ранее сохранённого файла">загрузить из файла</a></h1>
     <div class="tools">
       <input type="text" id="q" placeholder="Поиск по смыслу…" autocomplete="off">
       <select id="flt"><option value="all">Все</option><option value="open">Открытые</option><option value="done">Выполненные</option></select>
@@ -299,6 +299,32 @@ $('exp').onclick = async e => {
   let pulled = 0; try { pulled = await pullIntoApp(res.rows, mine); } catch (err) {}
   addMsg('bot', how + ': в нём ' + res.rows.length + ' записей, добавлено из приложения ' + res.added + (pulled ? ', из файла в приложение ' + pulled : '') + '.');
   if (pulled) loadItems();
+};
+$('imp').onclick = async e => {
+  e.preventDefault();
+  const text = await pickFileText();
+  if (text === null) return;
+  const rows = Offline.parseCsv(text);
+  if (!rows.length) { addMsg('bot', 'В этом файле не нашлось записей. Нужен файл, скачанный из этого приложения.'); return; }
+  try {
+    const cur = await api('/api/items');
+    const k = r => [r.kind, r.title.trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|');
+    const byKey = new Map(cur.map(r => [k(r), r]));
+    const fresh = []; let updated = 0;
+    for (const r of rows) {
+      const ex = byKey.get(k(r));
+      if (!ex) { fresh.push(r); continue; }
+      if (ex.status !== r.status) { await api('/api/items/' + ex.id, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: r.status})}); updated++; }   // статус берём из файла
+    }
+    let added = 0;
+    if (fresh.length) {
+      if (deviceMode) added = Offline.addRows(fresh);
+      else added = (await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({items: fresh.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})})).added || 0;
+    }
+    addMsg('bot', 'Загружено из файла: новых записей ' + added + ', обновлён статус у ' + updated + '.');
+    loadItems();
+  } catch (err) { addMsg('bot', 'Не удалось загрузить файл: ' + (err && err.message || err)); }
 };
 window.addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; return ''; });   // закрыть страницу случайно нельзя
 

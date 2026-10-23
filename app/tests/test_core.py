@@ -194,7 +194,7 @@ class PendingMemory(Base):
                 config.DATA_FILE.unlink()
             storage.init()
             self.a = Assistant()
-            r = self.say("Сегодня 9 вечера встреча с Ульяной")
+            r = self.say("Послезавтра в 9 вечера встреча с Ульяной")
             self.assertEqual(r["intent"], "create", r)
             self.say("Поставь встречу с Ульяной завтра")
             r = self.say(answer)

@@ -901,14 +901,14 @@ function parseCsv(text) {
   return out;
 }
 const rowKey = (r) => [r.kind, String(r.title).trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|');
-/** Сливает записи файла и записи приложения: порядок файла сохраняется, новые дописываются в конец, «выполнено» не теряется. */
+/** Сливает записи файла и приложения: порядок файла сохраняется, новые дописываются в конец, статус берётся из приложения. */
 function mergeCsv(existingText, items) {
   const base = parseCsv(existingText), seen = new Map();
   base.forEach(r => seen.set(rowKey(r), r));
   let added = 0;
   for (const it of items) {
     const k = rowKey({ kind: it.kind, title: it.title, due_date: it.due_date, due_time: it.due_time }), ex = seen.get(k);
-    if (ex) { if (it.status === 'done') ex.status = 'done'; continue; }
+    if (ex) { ex.status = it.status === 'done' ? 'done' : 'open'; continue; }   // актуальное состояние — в приложении
     const row = { kind: it.kind, title: it.title, due_date: it.due_date || null, due_time: it.due_time || null, status: it.status || 'open', created_at: it.created_at || '' };
     base.push(row); seen.set(k, row); added++;
   }
