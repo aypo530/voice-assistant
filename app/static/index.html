@@ -202,12 +202,22 @@ async function trySync() {
     loadMode(); loadItems();
   } finally { syncing = false; }
 }
+let healthFails = 0;
 async function api(path, opts = {}) {
   if (deviceMode) return Offline.call(path, opts);
-  const ms = path.startsWith('/api/voice') ? 30000 : path.startsWith('/api/health') ? 6000 : 15000;
+  const isHealth = path.startsWith('/api/health');
+  // Бесплатный сервер медленный (холодный старт, распознавание речи): таймауты с запасом, чтобы не уходить в автономный режим зря.
+  const ms = path.startsWith('/api/voice') ? 120000 : isHealth ? 12000 : path.startsWith('/api/message') ? 45000 : 25000;
   let r;
   try { r = await fetchT(path, {...opts, headers: {'X-Session-Id': sid, ...gkeyHeader(), ...(opts.headers || {})}}, ms); }
-  catch (e) { if (netErr(e)) { enterDevice(); return Offline.call(path, opts); } throw e; }
+  catch (e) {
+    if (netErr(e)) {
+      if (isHealth && ++healthFails < 3 && navigator.onLine !== false) throw e;   // фоновая проверка: три сбоя подряд, и только потом автономный режим
+      enterDevice(); return Offline.call(path, opts);
+    }
+    throw e;
+  }
+  healthFails = 0;
   if (r.status === 502 || r.status === 503 || r.status === 504) { enterDevice(); return Offline.call(path, opts); }
   let data = null; try { data = await r.json(); } catch (e) {}
   if (!r.ok) throw new Error((data && data.detail) || 'Ошибка сервера');
@@ -238,7 +248,7 @@ async function loadMode() {
       box.className = 'mode local';
       tx.textContent = '💻 Авто: локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
     }
-  } catch (e) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; }
+  } catch (e) { if (healthFails < 1) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; } }
 }
 // ---------- файл с записями: всегда один, новые записи дописываются ----------
 function idb() { return new Promise((res, rej) => { const q = indexedDB.open('assistant', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
@@ -341,7 +351,9 @@ function pickVoice() {
 function speak(text) {
   if (!$('tts').checked || !('speechSynthesis' in window)) return;
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text.replace(/[•]/g, '').replace(/\n+/g, '. '));
+  let lines = String(text).split('\n').filter(Boolean);
+  if (lines.length > 4) lines = [...lines.slice(0, 4), 'Остальные записи — в чате.'];       // длинные списки целиком не зачитываем
+  const u = new SpeechSynthesisUtterance(lines.join('. ').replace(/[•]/g, '').replace(/^\d+\.\s+/gm, '').slice(0, 450));
   u.lang = 'ru-RU'; const v = pickVoice(); if (v) u.voice = v; speechSynthesis.speak(u);
 }
 

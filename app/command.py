@@ -2,7 +2,7 @@
 from dataclasses import dataclass, fields
 from typing import Optional
 
-INTENTS = {"create", "list", "search", "complete", "delete", "update", "clarify", "other"}
+INTENTS = {"create", "list", "search", "complete", "reopen", "delete", "update", "clarify", "other"}
 KINDS = {"task", "meeting", "reminder"}
 REPEATS = {"daily", "weekdays", "weekly", "monthly"}
 
@@ -18,7 +18,7 @@ class Command:
     range_start: Optional[str] = None
     range_end: Optional[str] = None
     query: Optional[str] = None
-    ref: Optional[str] = None      # "last" — «последнюю запись», "it" — «её / эту» (последняя упомянутая)
+    ref: Optional[str] = None      # "last" — «последнюю запись», "it" — «её / эту», "all" / "all_done" — «все», "ord:N" — N-я в показанном списке
     repeat: Optional[str] = None   # daily | weekdays | weekly | monthly — повторяющаяся запись
     reply: Optional[str] = None
 

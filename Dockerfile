@@ -11,6 +11,6 @@ RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', dev
 RUN chmod -R a+rX /srv/models 2>/dev/null || true
 COPY app app
 RUN mkdir -p /data && chmod 777 /data
-ENV HOST=0.0.0.0 PORT=8000 MULTI_USER=1 PRELOAD_LOCAL=0 DATA_FILE=/data/assistant_data.csv
+ENV HOST=0.0.0.0 PORT=8000 MULTI_USER=1 PRELOAD_LOCAL=1 DATA_FILE=/data/assistant_data.csv
 EXPOSE 8000
 CMD ["python", "app/server.py"]

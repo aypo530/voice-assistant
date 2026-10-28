@@ -340,7 +340,15 @@ _RE_COMPLETE = (r"\b(?:отмет\w+|помет\w+|закро\w+|заверш\w+
                 r"|^я\s+(?:уже\s+)?\w+(?:ил|ыл|ал|ел|ял|ул|ол)(?:а)?\b")                # «Я подписал договор»
 _RE_DELETE = (r"^(?:пожалуйста\s+)?(?:удали\w*|сотри|стери|убери|очисти\w*)\b"
               r"|\b(?:удали\w*|убери)\s+(?:задач\w*|встреч\w*|напоминани\w*|запис\w*|заметк\w*)"
-              r"|^(?:пожалуйста\s+)?отмени\w*\s+(?:задач\w*|встреч\w*|напоминани\w*|запис\w*)")
+              r"|^(?:пожалуйста\s+)?отмени\w*\s+(?:задач\w*|встреч\w*|напоминани\w*|запис\w*)"
+              r"|^(?:задач\w*|встреч\w*|напоминани\w*|запис\w*)\b.*\b(?:удали|удалить|сотри|убери)\W*$")      # «Задачу про договор удали»
+_RE_REOPEN = (r"\b(?:отмени\w*|сними\w*|убери\w*|сбрось\w*|снять|убрать|отменить)\s+(?:мне\s+|мою\s+|эту\s+)?(?:отметк\w*|галочк\w*|выполнени\w*|статус\w*)"
+               r"|\bвер(?:ни|нуть)\w*\b.*\b(?:в\s+работу|обратно|как\s+было|в\s+невыполненн\w+)"
+               r"|\b(?:пометь|отметь|сделай|поставь)\b.*\b(?:не\s*выполнен\w*|не\s*сделан\w*|невыполнен\w*|открыт\w+|активн\w+)\b"
+               r"|\b(?:еще|ещё)\s+не\s+(?:сделан\w*|выполнен\w*|готов\w*)\b")
+_REOPEN_DROP = (r"\b(?:пожалуйста|отмени\w*|сними\w*|убери\w*|сбрось\w*|снять|убрать|отменить|отметк\w*|галочк\w*|выполнени\w*|статус\w*|"
+                r"верни\w*|вернуть|в\s+работу|обратно|как\s+было|в\s+невыполненн\w+|пометь|отметь|сделай|поставь|не\s*выполнен\w*|не\s*сделан\w*|"
+                r"невыполнен\w*|открыт\w+|активн\w+|еще|ещё|как|у|с|мне|мою|эту|ее|его)\b")
 _RE_UPDATE = r"\b(?:перенеси\w*|перенести|перемести\w*|передвин\w*|сдвин\w*|отложи\w*|поменяй\w*\s+(?:время|дат\w*)|измени\w*\s+(?:время|дат\w*))\b"
 _RE_FIND = r"\b(?:найди|найти|найдешь|поищи|поискать|искать|ищи|отыщи|вспомни|подскажи\s+где)\b"
 _RE_LIST = [
@@ -475,6 +483,24 @@ def parse(text: str, now: datetime, pending: Optional[dict] = None) -> Command:
         cmd.intent = "other"
         return cmd
 
+    # 0a) снять отметку выполнения
+    if "?" not in n and re.search(_RE_REOPEN, n):
+        t = Text(text)
+        scan_when(t, now)
+        rest = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", re.sub(_REOPEN_DROP, " ", t.remainder_norm()))).strip()
+        cmd.intent, cmd.kind = "reopen", _kind_from_nouns(n)
+        k = ordinal_in(n)
+        q = _query(rest)
+        if k and not _strip_ordinal(q):
+            cmd.ref = f"ord:{k}"
+        elif re.search(_RE_ALL, n) and not _strip_ordinal(re.sub(_RE_ALL, " ", q)):
+            cmd.ref = "all"
+        else:
+            cmd.query = q
+            if not q:
+                cmd.ref = "it"
+        return cmd
+
     # 0) удалить / перенести запись
     if "?" not in n and re.search(_RE_DELETE, n):
         return _as_target(cmd, text, n, now, "delete")
@@ -486,6 +512,12 @@ def parse(text: str, now: datetime, pending: Optional[dict] = None) -> Command:
         t = Text(text)
         scan_when(t, now)
         cmd.intent, cmd.kind, cmd.query = "complete", _kind_from_nouns(n), _query(t.remainder_norm())
+        k = ordinal_in(n)
+        if k and not _strip_ordinal(cmd.query):
+            cmd.query, cmd.ref = "", f"ord:{k}"
+        elif re.search(_RE_ALL, n):                                   # «отметь все задачи выполненными»
+            cmd.query = re.sub(r"\s+", " ", re.sub(_RE_ALL, " ", cmd.query)).strip()
+            cmd.ref = "all"
         return cmd
 
     # 2) поиск по явному глаголу
@@ -567,6 +599,29 @@ _TARGET_DROP = (r"\b(?:пожалуйста|удали\w*|сотри|стери|
                 r"мне|мою|мой|моя|мое|мои|про|по|о|об|с|со|в|во|на|к|и|а|для|из|от|у|меня)\b")
 
 
+_RE_ORD = (r"\b(перв(?:ую|ый|ое|ая|ой|ые)|втор(?:ую|ой|ое|ый|ая)|трет(?:ью|ий|ье|ья)|четв[её]рт(?:ую|ый|ое|ая)|пят(?:ую|ый|ое|ая)|"
+           r"шест(?:ую|ой|ое|ая)|седьм(?:ую|ой|ое|ая)|восьм(?:ую|ой|ое|ая)|девят(?:ую|ый|ое|ая)|десят(?:ую|ый|ое|ая))\b")
+_ORD_STEMS = ["перв", "втор", "трет", "четв", "пят", "шест", "седьм", "восьм", "девят", "десят"]
+_RE_ORD_NUM = r"\b(?:номер|№|под\s+номером)\s*(\d{1,2})\b|\b(\d{1,2})-(?:ю|й|я|е|ую|ая|ый|ое|ой)\b"
+
+
+def ordinal_in(n: str) -> Optional[int]:
+    """«первую» → 1, «номер 2» → 2, «3-ю» → 3."""
+    m = re.search(_RE_ORD, n)
+    if m:
+        return next(i + 1 for i, st in enumerate(_ORD_STEMS) if m.group(1).startswith(st))
+    m = re.search(_RE_ORD_NUM, n)
+    if m:
+        return int(m.group(1) or m.group(2))
+    return None
+
+
+def _strip_ordinal(q: str) -> str:
+    q = re.sub(_RE_ORD, " ", q)
+    q = re.sub(_RE_ORD_NUM, " ", q)
+    return re.sub(r"\s+", " ", q).strip()
+
+
 def _as_target(cmd: Command, text: str, n: str, now: datetime, intent: str) -> Command:
     """«Удали задачу про договор», «перенеси встречу с Иваном на пятницу в 15:00», «перенеси её на завтра»."""
     t = Text(text)
@@ -578,7 +633,13 @@ def _as_target(cmd: Command, text: str, n: str, now: datetime, intent: str) -> C
     cmd.intent, cmd.kind = intent, _kind_from_nouns(n)
     q = re.sub(_TARGET_DROP, " ", re.sub(_Q_KIND, " ", rest))
     cmd.query = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", q)).strip()
-    if not cmd.query:
+    k = ordinal_in(n)
+    if intent == "delete" and re.search(_RE_ALL, n):               # «удали все», «удали все задачи», «удали все выполненные»
+        cmd.query = re.sub(r"\s+", " ", re.sub(_RE_ALL + r"|\b(?:выполненн\w+|сделанн\w+|мои)\b", " ", cmd.query)).strip()
+        cmd.ref = "all_done" if re.search(r"\b(?:выполненн\w+|сделанн\w+)\b", n) else "all"
+    elif k and not _strip_ordinal(cmd.query):
+        cmd.query, cmd.ref = "", f"ord:{k}"
+    elif not cmd.query:
         cmd.ref = "last" if re.search(r"\bпоследн\w+", n) else "it"
     if intent == "update":
         cmd.date, cmd.time = (d.isoformat() if d else None), p.time

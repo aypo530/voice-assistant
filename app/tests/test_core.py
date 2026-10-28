@@ -494,5 +494,70 @@ class ImportItems(Base):
         self.assertEqual((meet["due_date"], meet["due_time"]), (None, None))
 
 
+
+class ChoiceAndReopen(Base):
+    """Выбор из списка по номеру, «удали все» с подтверждением, снятие отметки выполнения."""
+
+    def setUp(self):
+        super().setUp()
+        for t in ("Встреча с Ульяной завтра в 12:00", "Встреча с Ульяной завтра в 16:00", "Встреча с Ульяной послезавтра в 12:00"):
+            self.say(t)
+
+    def titles(self):
+        return [(i["due_time"], i["status"]) for i in storage.all_items("s1")]
+
+    def test_trailing_delete_verb_and_pick_ordinal(self):
+        r = self.say("Задачу про встречу с Ульяной удали")
+        self.assertEqual(r["intent"], "delete", r)
+        self.assertIn("1.", r["reply"])
+        r = self.say("вторую")
+        self.assertTrue(r["reply"].startswith("Удалил"), r)
+        self.assertEqual(len(storage.all_items("s1")), 2)
+
+    def test_pick_by_digit_and_last(self):
+        self.say("Удали встречу с Ульяной")
+        self.say("2")
+        self.assertEqual(len(storage.all_items("s1")), 2)
+        self.say("Удали встречу с Ульяной")
+        self.say("последнюю")
+        self.assertEqual(len(storage.all_items("s1")), 1)
+
+    def test_delete_all_needs_confirmation(self):
+        r = self.say("Удали все")
+        self.assertIn("Скажите «да»", r["reply"])
+        self.assertEqual(len(storage.all_items("s1")), 3)
+        self.say("нет")
+        self.assertEqual(len(storage.all_items("s1")), 3)
+        self.say("Удали все")
+        r = self.say("да")
+        self.assertEqual((r["reply"], len(storage.all_items("s1"))), ("Удалено записей: 3.", 0))
+
+    def test_ordinal_after_list(self):
+        self.say("Покажи все встречи")
+        r = self.say("Отметь вторую выполненной")
+        self.assertTrue(r["reply"].startswith("Отметил выполненной"), r)
+        self.assertEqual([s for _, s in self.titles()].count("done"), 1)
+        self.assertEqual(self.titles()[1][1], "done")
+
+    def test_reopen_context_and_by_name(self):
+        self.say("Отметь все встречи выполненными")
+        self.assertTrue(all(s == "done" for _, s in self.titles()))
+        self.say("Покажи все встречи")
+        r = self.say("Отмени выполнение")                  # после списка непонятно какую — спрашивает
+        self.assertIn("1.", r["reply"])
+        self.say("первую")
+        self.assertEqual(self.titles()[0][1], "open")
+        r = self.say("Отмени выполнение встречи с Ульяной")
+        self.assertIn("2.", r["reply"])
+        self.say("все")
+        self.assertTrue(all(s == "open" for _, s in self.titles()))
+
+    def test_reopen_just_completed(self):
+        self.say("Удали последнюю запись"); self.say("Удали последнюю запись")
+        self.say("Отметь встречу с Ульяной выполненной")
+        r = self.say("Отмени выполнение")
+        self.assertTrue(r["reply"].startswith("Вернул в работу"), r)
+
+
 if __name__ == "__main__":
     unittest.main()

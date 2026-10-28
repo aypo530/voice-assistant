@@ -401,7 +401,8 @@ const RE_COMPLETE = String.raw`\b(?:отмет\w+|помет\w+|закро\w+|з
   String.raw`|^я\s+(?:уже\s+)?\w+(?:ил|ыл|ал|ел|ял|ул|ол)(?:а)?\b`;
 const RE_DELETE = String.raw`^(?:пожалуйста\s+)?(?:удали\w*|сотри|стери|убери|очисти\w*)\b` +
   String.raw`|\b(?:удали\w*|убери)\s+(?:задач\w*|встреч\w*|напоминани\w*|запис\w*|заметк\w*)` +
-  String.raw`|^(?:пожалуйста\s+)?отмени\w*\s+(?:задач\w*|встреч\w*|напоминани\w*|запис\w*)`;
+  String.raw`|^(?:пожалуйста\s+)?отмени\w*\s+(?:задач\w*|встреч\w*|напоминани\w*|запис\w*)` +
+  String.raw`|^(?:задач\w*|встреч\w*|напоминани\w*|запис\w*)\b.*\b(?:удали|удалить|сотри|убери)\W*$`;
 const RE_UPDATE = String.raw`\b(?:перенеси\w*|перенести|перемести\w*|передвин\w*|сдвин\w*|отложи\w*|поменяй\w*\s+(?:время|дат\w*)|измени\w*\s+(?:время|дат\w*))\b`;
 const RE_FIND = String.raw`\b(?:найди|найти|найдешь|поищи|поискать|искать|ищи|отыщи|вспомни|подскажи\s+где)\b`;
 const RE_LIST = [
@@ -537,6 +538,25 @@ function asSearch(cmd, text, n, now) {
   cmd.intent = 'search'; cmd.kind = kindFromNouns(n); cmd.query = queryOf(t.remainderNorm());
   return cmd;
 }
+const RE_REOPEN = String.raw`\b(?:отмени\w*|сними\w*|убери\w*|сбрось\w*|снять|убрать|отменить)\s+(?:мне\s+|мою\s+|эту\s+)?(?:отметк\w*|галочк\w*|выполнени\w*|статус\w*)` +
+  String.raw`|\bвер(?:ни|нуть)\w*\b.*\b(?:в\s+работу|обратно|как\s+было|в\s+невыполненн\w+)` +
+  String.raw`|\b(?:пометь|отметь|сделай|поставь)\b.*\b(?:не\s*выполнен\w*|не\s*сделан\w*|невыполнен\w*|открыт\w+|активн\w+)\b` +
+  String.raw`|\b(?:еще|ещё)\s+не\s+(?:сделан\w*|выполнен\w*|готов\w*)\b`;
+const REOPEN_DROP = String.raw`\b(?:пожалуйста|отмени\w*|сними\w*|убери\w*|сбрось\w*|снять|убрать|отменить|отметк\w*|галочк\w*|выполнени\w*|статус\w*|` +
+  String.raw`верни\w*|вернуть|в\s+работу|обратно|как\s+было|в\s+невыполненн\w+|пометь|отметь|сделай|поставь|не\s*выполнен\w*|не\s*сделан\w*|` +
+  String.raw`невыполнен\w*|открыт\w+|активн\w+|еще|ещё|как|у|с|мне|мою|эту|ее|его)\b`;
+const RE_ORD = String.raw`\b(перв(?:ую|ый|ое|ая|ой|ые)|втор(?:ую|ой|ое|ый|ая)|трет(?:ью|ий|ье|ья)|четв[её]рт(?:ую|ый|ое|ая)|пят(?:ую|ый|ое|ая)|` +
+  String.raw`шест(?:ую|ой|ое|ая)|седьм(?:ую|ой|ое|ая)|восьм(?:ую|ой|ое|ая)|девят(?:ую|ый|ое|ая)|десят(?:ую|ый|ое|ая))\b`;
+const ORD_STEMS = ['перв', 'втор', 'трет', 'четв', 'пят', 'шест', 'седьм', 'восьм', 'девят', 'десят'];
+const RE_ORD_NUM = String.raw`\b(?:номер|№|под\s+номером)\s*(\d{1,2})\b|\b(\d{1,2})-(?:ю|й|я|е|ую|ая|ый|ое|ой)\b`;
+function ordinalIn(n) {
+  let m = search(RE_ORD, n);
+  if (m) return ORD_STEMS.findIndex(st => m[1].startsWith(st)) + 1;
+  m = search(RE_ORD_NUM, n);
+  if (m) return parseInt(m[1] || m[2], 10);
+  return null;
+}
+function stripOrdinal(q) { return sub(RE_ORD_NUM, ' ', sub(RE_ORD, ' ', q)).replace(/\s+/g, ' ').trim(); }
 function asTarget(cmd, text, n, now, intent) {
   const t = new Text(text);
   const p = scanWhen(t, now);
@@ -546,7 +566,12 @@ function asTarget(cmd, text, n, now, intent) {
   cmd.intent = intent; cmd.kind = kindFromNouns(n);
   const q = sub(TARGET_DROP, ' ', sub(Q_KIND, ' ', rest));
   cmd.query = sub(String.raw`[^\w\s]`, ' ', q).replace(/\s+/g, ' ').trim();
-  if (!cmd.query) cmd.ref = test(String.raw`\bпоследн\w+`, n) ? 'last' : 'it';
+  const k = ordinalIn(n);
+  if (intent === 'delete' && test(RE_ALL, n)) {
+    cmd.query = sub(RE_ALL + String.raw`|\b(?:выполненн\w+|сделанн\w+|мои)\b`, ' ', cmd.query).replace(/\s+/g, ' ').trim();
+    cmd.ref = test(String.raw`\b(?:выполненн\w+|сделанн\w+)\b`, n) ? 'all_done' : 'all';
+  } else if (k && !stripOrdinal(cmd.query)) { cmd.query = ''; cmd.ref = `ord:${k}`; }
+  else if (!cmd.query) cmd.ref = test(String.raw`\bпоследн\w+`, n) ? 'last' : 'it';
   if (intent === 'update') { cmd.date = d ? iso(d) : null; cmd.time = p.time; }
   return cmd;
 }
@@ -585,12 +610,26 @@ function parseCommand(text, now, pending) {
   if (test(RE_GREET, n)) { cmd.intent = 'other'; cmd.reply = greetReply(n); return cmd; }
   if (test(RE_HELP, n)) { cmd.intent = 'other'; return cmd; }
 
+  if (!n.includes('?') && test(RE_REOPEN, n)) {
+    const t = new Text(text);
+    scanWhen(t, now);
+    const rest = sub(String.raw`[^\w\s]`, ' ', sub(REOPEN_DROP, ' ', t.remainderNorm())).replace(/\s+/g, ' ').trim();
+    cmd.intent = 'reopen'; cmd.kind = kindFromNouns(n);
+    const k = ordinalIn(n), q = queryOf(rest);
+    if (k && !stripOrdinal(q)) cmd.ref = `ord:${k}`;
+    else if (test(RE_ALL, n) && !stripOrdinal(sub(RE_ALL, ' ', q))) cmd.ref = 'all';
+    else { cmd.query = q; if (!q) cmd.ref = 'it'; }
+    return cmd;
+  }
   if (!n.includes('?') && test(RE_DELETE, n)) return asTarget(cmd, text, n, now, 'delete');
   if (!n.includes('?') && test(RE_UPDATE, n)) return asTarget(cmd, text, n, now, 'update');
   if (!n.includes('?') && test(RE_COMPLETE, n)) {
     const t = new Text(text);
     scanWhen(t, now);
     cmd.intent = 'complete'; cmd.kind = kindFromNouns(n); cmd.query = queryOf(t.remainderNorm());
+    const k = ordinalIn(n);
+    if (k && !stripOrdinal(cmd.query)) { cmd.query = ''; cmd.ref = `ord:${k}`; }
+    else if (test(RE_ALL, n)) { cmd.query = sub(RE_ALL, ' ', cmd.query).replace(/\s+/g, ' ').trim(); cmd.ref = 'all'; }
     return cmd;
   }
   if (test(RE_FIND, n)) return asSearch(cmd, text, n, now);
@@ -721,17 +760,17 @@ const HELP = 'Я умею добавлять задачи, напоминани�
 const NOTICE = 'Автономный режим: работаю на этом устройстве без связи с сервером — точность ниже.';
 class UserError extends Error {}
 
-const sess = { pending: null, last_id: null };
+const sess = { pending: null, last_id: null, last_list: [], choice: null };
 const pastNow = (d, t, now) => `${iso(d)} ${t}` < `${iso(now.date)} ${now.hm}`;
 
-function line(r, today, withDate = false, fullDate = false) {
+function line(r, today, withDate = false, fullDate = false, num = null) {
   const d = parseDate(r.due_date);
   const t = r.due_time || (d ? 'без времени' : 'без срока');
   let prefix;
   if (fullDate && d) prefix = `${humanDate(d, today)}, ${t}`;
   else if (withDate && d) prefix = `${WEEKDAYS_SHORT[wday(d)]} ${shortDate(d, today)}, ${t}`;
   else prefix = t;
-  return `• ${prefix} — ${r.title} (${KIND_LABEL[r.kind]})${r.status === 'done' ? ' — выполнено' : ''}`;
+  return `${num ? num + '. ' : '• '}${prefix} — ${r.title} (${KIND_LABEL[r.kind]})${r.status === 'done' ? ' — выполнено' : ''}`;
 }
 
 function searchItems(query, kind) {
@@ -794,14 +833,15 @@ function doCreateRepeating(kind, title, start, t, repeat, now, s) {
   if (conflict) reply += `\nВнимание: ${humanDate(conflict[0], now.date)} в это время уже есть встреча «${conflict[1]}».`;
   return [reply, 'create'];
 }
-function doList(cmd, now) {
+function doList(cmd, now, s) {
   const today = now.date;
   if ((cmd.range_start || '').toLowerCase() === 'all') {          // период не назван — показываем всё
     const rows = store.all(KIND_FILTER[cmd.kind || '']);
     const what = { meeting: 'встречи', task: 'задачи', reminder: 'напоминания' }[cmd.kind || ''] || 'записи';
     if (!rows.length) return !cmd.kind ? 'Пока нет ни одной записи.' : 'Пока нет ни одной записи такого типа.';
     const shown = rows.slice(0, 30);
-    return `Все ${what}: ${rows.length}.\n` + shown.map(r => line(r, today, true)).join('\n') + (rows.length > shown.length ? `\n…и ещё ${rows.length - shown.length}.` : '');
+    if (s) { s.last_list = shown.map(r => r.id); s.last_id = shown.length === 1 ? shown[0].id : null; }
+    return `Все ${what}: ${rows.length}.\n` + shown.map((r, i) => line(r, today, true, false, i + 1)).join('\n') + (rows.length > shown.length ? `\n…и ещё ${rows.length - shown.length}.` : '');
   }
   let start = parseDate(cmd.range_start) || parseDate(cmd.date) || today;
   let end = parseDate(cmd.range_end) || start;
@@ -811,45 +851,117 @@ function doList(cmd, now) {
   const what = { meeting: 'Встреч', task: 'Задач' }[cmd.kind || ''] || 'Записей';
   if (!rows.length) return `${what} ${phrase} нет.`;
   const multi = !sameDay(start, end);
-  return `${what} ${phrase}: ${rows.length}.\n` + rows.map(r => line(r, today, multi)).join('\n');
+  if (s) { s.last_list = rows.map(r => r.id); s.last_id = rows.length === 1 ? rows[0].id : null; }
+  return `${what} ${phrase}: ${rows.length}.\n` + rows.map((r, i) => line(r, today, multi, false, i + 1)).join('\n');
 }
 function doSearch(cmd, heard, now, s) {
   const today = now.date;
   if (!store.all().length) return 'Пока нет ни одной записи.';
   const [found, mode] = searchItems(cmd.query || heard, cmd.kind);
   if (!found.length) return 'Ничего похожего не нашёл. Попробуйте назвать другое слово из записи.';
-  const lines = found.map(r => line(r, today, false, true));
+  const lines = found.map((r, i) => line(r, today, false, true, i + 1));
+  s.last_list = found.map(r => r.id);
   if (found.length === 1) s.last_id = found[0].id;
   const head = mode === 'semantic' ? 'Точных совпадений нет. Возможно, вы имели в виду:'
     : (found.length === 1 ? 'Нашёл одну запись:' : `Нашёл записей: ${found.length}.`);
   return head + '\n' + lines.join('\n');
 }
-function doComplete(cmd, now, s) {
-  const pool = store.all(KIND_FILTER[cmd.kind || '']).filter(r => r.status !== 'done');
-  if (!pool.length) return 'Невыполненных записей нет.';
+function askChoice(s, op, rows, now, head, cmd, allowAll = true) {
+  rows = rows.slice(0, 8);
+  const lines = rows.map((r, i) => line(r, now.date, false, true, i + 1));
+  s.choice = { op, ids: rows.map(r => r.id), date: cmd ? cmd.date : null, time: cmd ? cmd.time : null, all: allowAll };
+  s.last_list = rows.map(r => r.id);
+  const tail = 'Назовите номер, например «первую» или «2»' + (allowAll && rows.length > 1 ? ', или скажите «все».' : '.');
+  return head + '\n' + lines.join('\n') + '\n' + tail;
+}
+function ordItem(cmd, s) {
+  const k = parseInt(cmd.ref.split(':')[1], 10), ids = s.last_list || [];
+  if (!ids.length) return [null, 'Сначала попросите показать список, например «Покажи все задачи», и назовите номер.'];
+  if (!(k >= 1 && k <= ids.length)) return [null, `В списке ${ids.length} записей, номера от 1 до ${ids.length}.`];
+  const item = store.get(ids[k - 1]);
+  if (!item) return [null, 'Эта запись уже изменилась. Покажите список заново.'];
+  return [item, null];
+}
+function choiceStep(heard, now, s) {
+  const ch = s.choice;
+  const n = heard.toLowerCase().replace(/ё/g, 'е').split(/\s+/).filter(Boolean).join(' ');
+  if (!n) return null;
+  if (test(String.raw`^(?:нет|отмена|отмени\w*|не\s+надо|не\s+нужно|стоп|не\s+удаляй)\b`, n)) { s.choice = null; return ['Хорошо, ничего не меняю.', 'other']; }
+  let items = ch.ids.map(i => store.get(i)).filter(Boolean);
+  if (ch.op === 'delete_all') {
+    if (test(String.raw`^(?:да|ага|угу|подтверждаю|подтвердить|точно|конечно|давай|ок|окей|yes)\b`, n)) {
+      s.choice = null;
+      for (const r of items) store.remove(r.id);
+      s.last_id = null; s.last_list = [];
+      return [`Удалено записей: ${items.length}.`, 'delete'];
+    }
+    s.choice = null; return null;
+  }
+  if (!items.length) { s.choice = null; return null; }
+  let pick = null;
+  if (n.split(' ').length <= 6) {
+    if (ch.all && test(String.raw`\b(?:все|всё|обе|оба)\b`, n)) pick = 'all';
+    else if (test(String.raw`\bпоследн\w+`, n)) pick = items.length;
+    else { const m = search(String.raw`^(?:номер\s+|№\s*)?(\d{1,2})\W*$`, n); pick = m ? parseInt(m[1], 10) : ordinalIn(n); }
+  }
+  if (pick === null) { s.choice = null; return null; }
+  if (pick !== 'all' && !(pick >= 1 && pick <= items.length)) return [`В списке ${items.length} записей, назовите номер от 1 до ${items.length}.`, 'clarify'];
+  const chosen = pick === 'all' ? items : [items[pick - 1]];
+  s.choice = null;
+  const op = ch.op;
+  if (op === 'update') return moveItem(chosen[0], { date: ch.date, time: ch.time }, now, s);
+  for (const r of chosen) {
+    if (op === 'delete') store.remove(r.id); else store.update(r.id, { status: op === 'complete' ? 'done' : 'open' });
+  }
+  s.last_id = op === 'delete' ? null : chosen[chosen.length - 1].id;
+  if (op === 'delete') s.last_list = [];
+  const intent = op === 'delete' ? 'delete' : 'complete';
+  if (chosen.length === 1) {
+    const r = chosen[0], verb = { delete: 'Удалил', complete: 'Отметил выполненной', reopen: 'Вернул в работу' }[op];
+    return [`${verb}: ${KIND_LABEL[r.kind]} «${r.title}».`, intent];
+  }
+  return [`${{ delete: 'Удалено записей', complete: 'Отмечено выполненными', reopen: 'Возвращено в работу' }[op]}: ${chosen.length}.`, intent];
+}
+function doComplete(cmd, now, s, done = true) {
+  const want = done ? 'open' : 'done', verb = done ? 'Отметил выполненной' : 'Вернул в работу', op = done ? 'complete' : 'reopen';
+  const pool = store.all(KIND_FILTER[cmd.kind || '']).filter(r => r.status === want);
+  if (!pool.length) return done ? 'Невыполненных записей нет.' : 'Выполненных записей нет.';
+  const newStatus = done ? 'done' : 'open';
+  const apply = (item) => { s.last_id = item.id; store.update(item.id, { status: newStatus }); return `${verb}: ${KIND_LABEL[item.kind]} «${item.title}».`; };
+  if ((cmd.ref || '').startsWith('ord:')) {
+    const [item, ask] = ordItem(cmd, s);
+    if (ask) return ask;
+    if (item.status !== want) return done ? 'Эта запись уже выполнена.' : 'Эта запись и так не отмечена выполненной.';
+    return apply(item);
+  }
+  if (cmd.ref === 'all') {
+    const found = cmd.query ? find(cmd.query, pool, 50)[0] : pool;
+    if (!found.length) return 'Не нашёл такие записи. Назовите их по-другому.';
+    for (const r of found) store.update(r.id, { status: newStatus });
+    return `${done ? 'Отмечено выполненными' : 'Возвращено в работу'}: ${found.length}.`;
+  }
   if (!cmd.query && s.last_id) {
     const f = pool.filter(r => r.id === s.last_id);
-    if (f.length) { store.update(f[0].id, { status: 'done' }); return `Отметил выполненной: ${KIND_LABEL[f[0].kind]} «${f[0].title}».`; }
+    if (f.length) return apply(f[0]);
+  }
+  if (!cmd.query && !done) {
+    if (pool.length === 1) return apply(pool[0]);
+    return askChoice(s, op, pool, now, 'Какую запись вернуть в работу? Выполненные:', cmd);
   }
   const [found] = find(cmd.query || '', pool, 5);
-  if (!cmd.query || !found.length) return 'Не нашёл такую невыполненную запись. Назовите её по-другому.';
-  if (found.length > 1) {
-    return 'Нашёл несколько подходящих записей, какую отметить? Уточните название.\n' + found.map(r => line(r, now.date, false, true)).join('\n');
-  }
-  const item = found[0];
-  s.last_id = item.id;
-  store.update(item.id, { status: 'done' });
-  return `Отметил выполненной: ${KIND_LABEL[item.kind]} «${item.title}».`;
+  if (!cmd.query || !found.length) return done ? 'Не нашёл такую невыполненную запись. Назовите её по-другому.' : 'Не нашёл такую выполненную запись. Назовите её по-другому.';
+  if (found.length > 1) return askChoice(s, op, found, now, 'Нашёл несколько подходящих записей.', cmd);
+  return apply(found[0]);
 }
-function resolveTarget(cmd, now, s) {
+function resolveTarget(cmd, now, s, op = 'delete') {
   const pool = store.all(KIND_FILTER[cmd.kind || '']);
   if (!pool.length) return [null, 'Записей пока нет.'];
+  if ((cmd.ref || '').startsWith('ord:')) return ordItem(cmd, s);
   if (cmd.query) {
     const [found, mode] = find(cmd.query, pool, 5);
     if (!found.length) return [null, 'Не нашёл такую запись. Назовите её по-другому.'];
-    const lines = found.map(r => line(r, now.date, false, true));
-    if (mode !== 'exact') return [null, 'Точного совпадения нет. Возможно, вы имели в виду:\n' + lines.join('\n') + '\nУточните название.'];
-    if (found.length > 1) return [null, 'Нашёл несколько подходящих записей, какую выбрать? Уточните название.\n' + lines.join('\n')];
+    if (mode !== 'exact') return [null, askChoice(s, op, found, now, 'Точного совпадения нет. Возможно, вы имели в виду:', cmd, false)];
+    if (found.length > 1) return [null, askChoice(s, op, found, now, 'Нашёл несколько подходящих записей.', cmd, op === 'delete')];
     return [found[0], null];
   }
   if (cmd.ref === 'last') return [pool.reduce((a, b) => (b.id > a.id ? b : a)), null];
@@ -858,9 +970,20 @@ function resolveTarget(cmd, now, s) {
   return [item, null];
 }
 function doDelete(cmd, now, s) {
-  const [item, ask] = resolveTarget(cmd, now, s);
+  if (cmd.ref === 'all' || cmd.ref === 'all_done') {
+    let pool = store.all(KIND_FILTER[cmd.kind || '']);
+    if (cmd.ref === 'all_done') pool = pool.filter(r => r.status === 'done');
+    if (cmd.query) { const [f, mode] = find(cmd.query, pool, 50); pool = mode === 'exact' ? f : []; }
+    if (!pool.length) return 'Нечего удалять.';
+    s.choice = { op: 'delete_all', ids: pool.map(r => r.id) };
+    let what = { meeting: 'встречи', task: 'задачи', reminder: 'напоминания' }[cmd.kind || ''] || 'записи';
+    if (cmd.ref === 'all_done') what = 'выполненные ' + what;
+    return `Удалить все ${what}: ${pool.length}? Скажите «да», чтобы подтвердить, или «нет».`;
+  }
+  const [item, ask] = resolveTarget(cmd, now, s, 'delete');
   if (ask) return ask;
   store.remove(item.id);
+  s.last_list = [];
   if (s.last_id === item.id) s.last_id = null;
   return `Удалил: ${KIND_LABEL[item.kind]} «${item.title}».`;
 }
@@ -894,8 +1017,11 @@ function updateItem(id, data) {
 }
 class KeyError extends Error {}
 function doUpdate(cmd, now, s) {
-  const [item, ask] = resolveTarget(cmd, now, s);
+  const [item, ask] = resolveTarget(cmd, now, s, 'update');
   if (ask) return [ask, 'clarify'];
+  return moveItem(item, cmd, now, s);
+}
+function moveItem(item, cmd, now, s) {
   s.last_id = item.id;
   const d = parseDate(cmd.date), t = parseTime(cmd.time);
   if (!d && !t) {
@@ -921,14 +1047,19 @@ function doUpdate(cmd, now, s) {
 function handleText(text, nowTs) {
   const now = makeNow(nowTs == null ? Date.now() : nowTs);
   const heard = (text || '').trim();
+  if (sess.choice) {
+    const res = choiceStep(heard, now, sess);
+    if (res) return { ok: true, transcript: heard, reply: res[0], intent: res[1], engine: 'local', notice: NOTICE };
+  }
   const cmd = parseCommand(heard, now, sess.pending);
-  if (cmd.intent !== 'clarify') sess.pending = null;
+  if (cmd.intent !== 'clarify') { sess.pending = null; if (cmd.intent !== 'other' || cmd.reply) sess.choice = null; }
   let reply, intent;
   try {
     if (cmd.intent === 'create') [reply, intent] = doCreate(cmd, now, sess);
-    else if (cmd.intent === 'list') [reply, intent] = [doList(cmd, now), 'list'];
+    else if (cmd.intent === 'list') [reply, intent] = [doList(cmd, now, sess), 'list'];
     else if (cmd.intent === 'search') [reply, intent] = [doSearch(cmd, heard, now, sess), 'search'];
     else if (cmd.intent === 'complete') [reply, intent] = [doComplete(cmd, now, sess), 'complete'];
+    else if (cmd.intent === 'reopen') [reply, intent] = [doComplete(cmd, now, sess, false), 'complete'];
     else if (cmd.intent === 'delete') [reply, intent] = [doDelete(cmd, now, sess), 'delete'];
     else if (cmd.intent === 'update') [reply, intent] = doUpdate(cmd, now, sess);
     else if (cmd.intent === 'clarify') [reply, intent] = [cmd.reply || 'Уточните, пожалуйста, детали.', 'clarify'];
