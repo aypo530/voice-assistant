@@ -141,6 +141,21 @@ class Parsed:
         self.relative_time = False
 
 
+_MON_STEMS = ["январ", "феврал", "март", "апрел", "ма", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"]
+
+
+def _month_range(month: int, today: date, named: bool = False) -> tuple:
+    """Границы месяца. month может выйти за 1..12 (соседний год). Для названного месяца далёкий прошлый считаем следующим годом."""
+    year = today.year
+    if month < 1:
+        month, year = month + 12, year - 1
+    elif month > 12:
+        month, year = month - 12, year + 1
+    if named and today.month - month > 6:
+        year += 1
+    return date(year, month, 1), date(year, month, monthrange(year, month)[1])
+
+
 def scan_when(t: Text, now: datetime) -> Parsed:
     """Находит дату/время/период во фразе и вырезает их из Text."""
     p = Parsed()
@@ -196,6 +211,27 @@ def scan_when(t: Text, now: datetime) -> Parsed:
     m = t.search(r"\b(?:в|на)\s+(?:этом|текущем)\s+месяц\w*|\bна\s+месяц\b")
     if m:
         p.range = (today, date(today.year, today.month, monthrange(today.year, today.month)[1]))
+        t.take(m)
+    m = t.search(r"\b(?:в|на|за)\s+прошл\w+\s+недел\w+")
+    if m:
+        mon = monday(today) - timedelta(days=7)
+        p.range = (mon, mon + timedelta(days=6))
+        t.take(m)
+    m = t.search(r"\b(?:в|на|за)\s+прошл\w+\s+месяц\w*")
+    if m:
+        p.range = _month_range(today.month - 1, today)
+        t.take(m)
+    m = t.search(r"\b(?:в|на|за)\s+(?:следующ\w+|будущ\w+)\s+месяц\w*")
+    if m:
+        p.range = _month_range(today.month + 1, today)
+        t.take(m)
+    m = t.search(r"\b(?:в|на|за)\s+(?P<mn>январ[еья]|феврал[еья]|март[е]?|апрел[еья]|ма[йе]|июн[еья]|июл[еья]|август[е]?|сентябр[еья]|октябр[еья]|ноябр[еья]|декабр[еья])\b(?!\s*\d)")
+    if m:
+        mi = next(i for i, stem in enumerate(_MON_STEMS) if m.group("mn").startswith(stem)) + 1
+        if mi == today.month:
+            p.range = _month_range(mi, today)
+        else:
+            p.range = _month_range(mi, today, named=True)
         t.take(m)
 
     # конкретная дата
@@ -283,6 +319,16 @@ def scan_when(t: Text, now: datetime) -> Parsed:
 # ---------- намерения ----------
 _RE_HELP = r"\b(?:что\s+ты\s+(?:умеешь|можешь)|помощь|помоги\s+мне\s+разобраться|как\s+тобой\s+пользоваться|как\s+(?:это\s+)?работает)\b"
 _RE_GREET = r"^(?:привет\w*|здравствуй\w*|добрый\s+(?:день|вечер|утро)|доброе\s+утро|хай|hello|hi|спасибо\w*|благодар\w+|пока|до\s+свидания|ок|окей|ясно|понятно|отлично|хорошо)\W*$"
+def _greet_reply(n: str) -> str:
+    if re.match(r"^(?:спасибо|благодар)", n):
+        return "Пожалуйста! Если нужно что-то записать или найти — скажите."
+    if re.match(r"^(?:пока|до\s+свидания)", n):
+        return "До свидания! Ваши записи сохранены."
+    if re.match(r"^(?:ок|окей|ясно|понятно|отлично|хорошо)", n):
+        return "Хорошо. Что записать или найти?"
+    return "Здравствуйте! Что записать или найти? Например: «Напомни завтра в 10 позвонить Ивану»."
+
+
 _RE_CANCEL = r"^(?:нет|отмена|отмени\w*|не\s+надо|не\s+нужно|забудь|стоп)\b"
 _RE_COMPLETE = (r"\b(?:отмет\w+|помет\w+|закро\w+|заверш\w+)\b.*\b(?:выполнен\w+|сделан\w+|готов\w+|заверш\w+)\b"
                 r"|\b(?:отмет\w+|помет\w+|закро\w+)\s+(?:задач\w*|встреч\w*|напоминани\w*|дел\w*)"
@@ -298,19 +344,25 @@ _RE_DELETE = (r"^(?:пожалуйста\s+)?(?:удали\w*|сотри|сте�
 _RE_UPDATE = r"\b(?:перенеси\w*|перенести|перемести\w*|передвин\w*|сдвин\w*|отложи\w*|поменяй\w*\s+(?:время|дат\w*)|измени\w*\s+(?:время|дат\w*))\b"
 _RE_FIND = r"\b(?:найди|найти|найдешь|поищи|поискать|искать|ищи|отыщи|вспомни|подскажи\s+где)\b"
 _RE_LIST = [
-    r"^(?:а\s+)?(?:что|чем)\s+(?:у\s+меня|мне|запланирован\w*|намечен\w*|на\b|по\s+план|в\b|есть|буд\w+)",
+    r"^(?:а\s+)?(?:что|чем)\s+(?:у\s+меня|мне|запланирован\w*|намечен\w*|на\b|по\s+план|в\b|есть|буд\w+|был[аио]?\b)",
     r"\bкакие\s+(?:у\s+меня\s+)?(?:планы|задачи|встречи|дела|напоминания|события)\b",
     r"\b(?:покажи|показать|выведи|назови|перечисли|расскажи|скажи)\b",
     r"\b(?:есть|будут|будет)\s+ли\b",
     r"\bсписок\s+(?:задач|встреч|дел|планов)\b|\bрасписание\b|\bповестка\b|\bпланы\s+на\b|\bчто\s+по\s+план",
     r"\bсколько\s+(?:у\s+меня\s+)?(?:задач|встреч|дел)\b",
+    r"\bмо[иеёя]\s+(?:дела|планы|задачи|встречи|записи|напоминания)\b",
+    r"^(?:а\s+)?что\s+я\s+(?:планировал\w*|запланировал\w*|делал\w*|собирался)\b",
+    r"^(?:а\s+)?что\s+(?:мне\s+)?(?:нужно|надо|делать|предстоит|сделать)\b",
+    r"\b(?:все|всё)\s+(?:мои\s+)?(?:задачи|встречи|записи|напоминания|дела|планы)\b",
 ]
+_RE_ALL = r"\b(?:все|всё|всех)\b"
 _RE_WHEN_SEARCH = (r"\bкогда\b.*\b(?:был[аио]?|были|ставил\w*|поставил\w*|создавал\w*|записывал\w*|планировал\w*|назначал\w*)\b"
                    r"|\bкогда\s+(?:у\s+меня\s+)?(?:встреча|задача|напоминание|созвон)\b"
+                   r"|\bесть\s+(?:ли\s+)?что[\s-]?(?:нибудь|то)\s+(?:про|о|об|по)\b"
                    r"|\bя\s+(?:когда-?то|как-?то|ранее|раньше|давно)\b|\bпомнишь\b|\bгде\s+(?:моя\s+|мое\s+)?(?:задача|встреча|запись|напоминание)\b")
-_RE_CREATE_VERB = (r"\b(?:напомни\w*|поставь|поставить|добавь|добавить|создай|создать|запиши|записать|запланируй|запланировать|"
+_RE_CREATE_VERB = (r"\b(?:напомни\w*|напоминай\w*|поставь|поставить|добавь|добавить|создай|создать|запиши|записать|запланируй|запланировать|"
                    r"назначь|назначить|внеси|не\s+забудь|нужно|надо|необходимо|пора)\b")
-_RE_REMINDER = r"\bнапомни\w*|\bнапоминани\w*"
+_RE_REMINDER = r"\bнапомни\w*|\bнапоминай\w*|\bнапоминани\w*|\bне\s+забуд\w*"
 _RE_MEETING = (r"\b(?:встреч\w*|созвон\w*|совещани\w*|планерк\w*|митинг\w*|собеседовани\w*|прием\w*|визит\w*|консультаци\w*)"
                r"|\b(?:к|у)\s+(?:врач\w*|стоматолог\w*|доктор\w*|парикмахер\w*|терапевт\w*|окулист\w*)")
 
@@ -320,10 +372,42 @@ _KIND_NOUNS = [("meeting", r"\b(?:встреч\w*|созвон\w*|совещан
 _Q_DROP = (r"\b(?:найди|найти|найдешь|поищи|поискать|искать|ищи|отыщи|вспомни|покажи|показать|скажи|подскажи|расскажи|"
            r"когда|где|что|какая|какой|какую|какие|был[аио]?|были|будет|будут|ставил\w*|поставил\w*|создавал\w*|создал\w*|"
            r"записывал\w*|записал\w*|добавлял\w*|планировал\w*|назначал\w*|у\s+меня|мне|мой|моя|мою|мои|мое|ее|его|их|"
-           r"я|мы|ты|вы|когда-?то|как-?то|ранее|раньше|давно|помнишь|пожалуйста|ли|задач\w*|встреч\w*|напоминани\w*|"
+           r"есть|нибудь|я|мы|ты|вы|когда-?то|как-?то|ранее|раньше|давно|помнишь|пожалуйста|ли|задач\w*|встреч\w*|напоминани\w*|"
            r"запис\w*|дело|дела|дел|про|по|о|об|обо|насчет|относительно|связанн\w*|касающ\w*|"
            r"с|со|в|во|на|к|для|из|от|и|а|но|то|же|бы|это|эту|этот|уже|отмет\w+|помет\w+|закро\w+|заверш\w+|"
            r"выполнен\w*|выполнил\w*|сделан\w*|сделал\w*|закончил\w*|готов\w*|галочк\w*|поставь|как|что|которую|который)\b")
+
+
+_WD_ACC = {"понедельник": "в понедельник", "вторник": "во вторник", "сред": "в среду", "четверг": "в четверг",
+           "пятниц": "в пятницу", "суббот": "в субботу", "воскресень": "в воскресенье"}
+_RE_REPEAT_WD = re.compile(r"\b(?:кажд(?:ый|ую|ое)|по)\s+(понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)\w*", re.I)
+_RE_REPEAT_OTHER = [
+    ("weekdays", re.compile(r"\b(?:кажд(?:ый|ые)\s+будн\w+(?:\s+(?:день|дни))?|по\s+будн\w+|в\s+будни)\b", re.I)),
+    ("daily", re.compile(r"\b(?:кажд(?:ый|ые)\s+(?:день|дни|сутки)|ежедневно)\b", re.I)),
+    ("weekly", re.compile(r"\b(?:кажд(?:ую|ые)\s+недел\w+|еженедельно|раз\s+в\s+неделю)\b", re.I)),
+    ("monthly", re.compile(r"\b(?:кажд(?:ый|ые)\s+месяц\w*|ежемесячно|раз\s+в\s+месяц)\b", re.I)),
+]
+
+
+_RE_DAY_NUM = re.compile(r"\b(\d{1,2})(?:-?го)?\s+числа\b", re.I)
+
+
+def extract_repeat(text: str, today: Optional[date] = None):
+    """«Каждый понедельник в 10 планерка» → («в понедельник в 10 планерка», "weekly")."""
+    m = _RE_REPEAT_WD.search(text)
+    if m:
+        stem = m.group(1).lower()
+        return text[:m.start()] + _WD_ACC[stem] + text[m.end():], "weekly"
+    for rep, rx_ in _RE_REPEAT_OTHER:
+        if rx_.search(text):
+            if rep == "monthly" and today:                      # «каждый месяц 25 числа» — первое такое число
+                dm = _RE_DAY_NUM.search(text)
+                if dm and 1 <= int(dm.group(1)) <= 28:
+                    day = int(dm.group(1))
+                    d0 = today.replace(day=day) if today.day <= day else (today.replace(day=1) + timedelta(days=32)).replace(day=day)
+                    text = _RE_DAY_NUM.sub(f"{day} {MONTHS[d0.month - 1]}", text, count=1)
+            return re.sub(r"\s+", " ", rx_.sub(" ", text)).strip(), rep
+    return text, None
 
 
 def _kind_from_nouns(n: str) -> Optional[str]:
@@ -339,7 +423,7 @@ def _query(n: str) -> str:
 
 def _title_clean(t: Text, kind: str) -> str:
     t.take_all(r"\b(?:пожалуйста|плиз)\b")
-    t.take_all(r"\bнапомни(?:ть)?(?:\s+мне)?\b")
+    t.take_all(r"\bнапомни(?:ть)?(?:\s+мне)?\b|\bнапоминай(?:те)?(?:\s+мне)?\b|\bне\s+забудь(?:те)?\b")
     t.take_all(r"\b(?:поставь|поставить|добавь|добавить|создай|создать|запиши|записать|запланируй|запланировать|"
                r"внеси|сделай|назначь|назначить)\s+(?:мне\s+)?(?:новую\s+|новое\s+)?(?:задач\w*|напоминани\w*|заметк\w*)?")
     t.take_all(r"\b(?:мне\s+)?(?:нужно|надо|необходимо|придется|не\s+забудь|не\s+забыть|пора)\b")
@@ -385,7 +469,7 @@ def parse(text: str, now: datetime, pending: Optional[dict] = None) -> Command:
         cmd.intent, cmd.reply = "other", "Хорошо, не буду добавлять."
         return cmd
     if re.search(_RE_GREET, n):
-        cmd.intent, cmd.reply = "other", None
+        cmd.intent, cmd.reply = "other", _greet_reply(n)
         return cmd
     if re.search(_RE_HELP, n):
         cmd.intent = "other"
@@ -413,10 +497,14 @@ def parse(text: str, now: datetime, pending: Optional[dict] = None) -> Command:
         t = Text(text)
         p = scan_when(t, now)
         has_period = bool(p.date or p.range or p.week_shift or p.this_week or p.weekend or p.to_week_end)
-        if not has_period and _query(t.remainder_norm()) and re.search(r"\bпокажи|показать|выведи|назови|перечисли\b", n):
+        rest = _query(re.sub(_RE_ALL, " ", t.remainder_norm()))
+        if not has_period and rest and re.search(r"\bпокажи|показать|выведи|назови|перечисли\b", n):
             return _as_search(cmd, text, n, now)          # «покажи задачу про договор» — это поиск
-        start, end = _list_period(p, today)
         cmd.intent, cmd.kind = "list", _kind_from_nouns(n)
+        if not has_period and not rest and (re.search(_RE_ALL, n) or cmd.kind or re.search(r"\bесть\b|\bсколько\b|\bмо[иеёя]\b", n)):
+            cmd.range_start = "all"                       # период не назван: «покажи все задачи», «какие у меня встречи?»
+            return cmd
+        start, end = _list_period(p, today)
         cmd.range_start, cmd.range_end = start.isoformat(), end.isoformat()
         return cmd
 
@@ -456,6 +544,8 @@ def parse(text: str, now: datetime, pending: Optional[dict] = None) -> Command:
             return cmd
 
     # 6) создание
+    text, repeat = extract_repeat(text, today)
+    n = text.lower().replace("ё", "е")
     has_verb = bool(re.search(_RE_CREATE_VERB, n))
     t = Text(text)
     p = scan_when(t, now)
@@ -467,7 +557,9 @@ def parse(text: str, now: datetime, pending: Optional[dict] = None) -> Command:
     if not (has_verb or has_when or is_meeting) and len(n.split()) < 2:
         cmd.intent = "other"
         return cmd
-    return _build_create(cmd, t, p, now, pending=None)
+    cmd = _build_create(cmd, t, p, now, pending=None)
+    cmd.repeat = repeat
+    return cmd
 
 
 _TARGET_DROP = (r"\b(?:пожалуйста|удали\w*|сотри|стери|убери|очисти\w*|отмени\w*|перенеси\w*|перенести|перемести\w*|передвин\w*|"
@@ -515,6 +607,7 @@ def _build_create(cmd: Command, t: Text, p: Parsed, now: datetime, pending: Opti
             d = monday(today) + timedelta(days=6)
         cmd.intent, cmd.kind, cmd.title = "create", kind, title
         cmd.date, cmd.time = (d.isoformat() if d else None), tm
+        cmd.repeat = pending.get("repeat")
         return cmd
 
     if re.search(_RE_REMINDER, n):

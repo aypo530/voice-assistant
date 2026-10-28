@@ -178,9 +178,6 @@ class Search(unittest.TestCase):
         self.assertEqual(search.find("космос", self.ITEMS), ([], "none"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class PendingMemory(Base):
     """Сценарии со скриншота: ответ на уточняющий вопрос не должен превращаться в задачу."""
@@ -384,3 +381,118 @@ class UserKey(Base):
         self.assertEqual(llm.current_key(), config.GEMINI_API_KEY)
         self.assertFalse(llm.has_key())          # у сервера ключа нет, чужое состояние не протекло
         self.assertEqual(llm.status()["state"], "no_key")
+
+
+class Repeating(Base):
+    """Повторяющиеся записи раскладываются на серию обычных записей."""
+
+    def test_weekly_meeting(self):
+        r = self.say("Каждый понедельник в 10 планерка")
+        self.assertEqual(r["intent"], "create", r)
+        rows = storage.all_items("s1")
+        self.assertEqual(len(rows), 8)
+        self.assertTrue(all(i["kind"] == "meeting" and i["title"] == "Планерка" and i["due_time"] == "10:00" for i in rows))
+        self.assertEqual({datetime.strptime(i["due_date"], "%Y-%m-%d").weekday() for i in rows}, {0})
+        self.assertIn("каждый понедельник", r["reply"])
+
+    def test_daily_reminder_and_no_duplicates(self):
+        self.say("Напоминай каждый день в 9 утра пить воду")
+        rows = storage.all_items("s1")
+        self.assertEqual((len(rows), rows[0]["kind"]), (14, "reminder"))
+        r = self.say("Напоминай каждый день в 9 утра пить воду")
+        self.assertEqual(len(storage.all_items("s1")), 14, r)
+
+    def test_repeat_words_not_in_title(self):
+        self.say("Ежемесячно 25 числа оплатить аренду")
+        self.assertEqual({i["title"] for i in storage.all_items("s1")}, {"Оплатить аренду"})
+
+    def test_reminder_phrase_ne_zabud(self):
+        self.say("Не забудь завтра в 9 купить молоко")
+        self.assertEqual(storage.all_items("s1")[0]["kind"], "reminder")
+
+    def test_clarify_keeps_repeat(self):
+        r = self.say("Каждую пятницу встреча с командой")
+        self.assertEqual(r["intent"], "clarify", r)
+        self.say("в 17:00")
+        self.assertEqual(len(storage.all_items("s1")), 8)
+
+
+class TypeDetection(Base):
+    """Тип записи (задача / напоминание / встреча) определяется по формулировке."""
+
+    CASES = [
+        ("Напомни мне завтра в 10 утра позвонить Ивану", "reminder"),
+        ("В пятницу нужно отправить отчёт", "task"),
+        ("Поставь задачу купить билеты до конца недели", "task"),
+        ("Добавь встречу с командой завтра в 15:00", "meeting"),
+        ("В четверг в 11 у меня встреча с дизайнером", "meeting"),
+        ("Созвон с клиентом послезавтра в 14:00", "meeting"),
+        ("Запишусь к врачу послезавтра в 9:30", "meeting"),
+    ]
+
+    def test_kinds(self):
+        for text, kind in self.CASES:
+            if config.DATA_FILE.exists():
+                config.DATA_FILE.unlink()
+            storage.init()
+            r = self.say(text)
+            rows = storage.all_items("s1")
+            self.assertEqual(r["intent"], "create", (text, r))
+            self.assertEqual(rows[0]["kind"], kind, text)
+
+
+
+class ListPhrases(Base):
+    """Просмотр записей: период не назван, прошлые периоды, месяцы, «мои дела»."""
+
+    def setUp(self):
+        super().setUp()
+        self.say("Добавь встречу с Иваном завтра в 15:00")
+        self.say("Подготовить презентацию к пятнице")
+        self.say("Напомни через час позвонить маме")
+
+    def test_all_without_period(self):
+        for q in ("Покажи все мои задачи", "Какие у меня задачи?", "Что у меня есть?", "Покажи все записи", "Мои дела"):
+            r = self.say(q)
+            self.assertEqual(r["intent"], "list", q)
+            self.assertTrue(r["reply"].startswith("Все "), (q, r["reply"]))
+
+    def test_all_meetings_only(self):
+        r = self.say("Покажи все встречи")
+        self.assertIn("Встреча с Иваном", r["reply"])
+        self.assertNotIn("презентацию", r["reply"])
+
+    def test_past_and_month_periods(self):
+        for q in ("Что у меня на прошлой неделе?", "Что было в сентябре?", "Что я планировал на вчера?", "Что у меня в следующем месяце?"):
+            r = self.say(q)
+            self.assertEqual(r["intent"], "list", q)
+            self.assertNotIn("на сегодня", r["reply"], q)
+
+    def test_something_about(self):
+        r = self.say("Есть что-нибудь про презентацию?")
+        self.assertEqual(r["intent"], "search", r)
+        self.assertIn("презентацию", r["reply"])
+
+    def test_greetings(self):
+        self.assertTrue(self.say("Спасибо")["reply"].startswith("Пожалуйста"))
+        self.assertTrue(self.say("Привет")["reply"].startswith("Здравствуйте"))
+
+
+
+class ImportItems(Base):
+    def test_import_validates_and_dedups(self):
+        r = self.a.import_items("s1", [
+            {"kind": "task", "title": "Купить хлеб", "date": "2026-10-30", "time": None, "status": "done", "created_at": "x"},
+            {"kind": "task", "title": "купить хлеб", "date": "2026-10-30"},       # дубликат
+            {"kind": "bad", "title": "x"},                                         # неизвестный тип
+            {"kind": "meeting", "title": "Планёрка", "date": "2026-13-45", "time": "25:99"},   # битые дата и время
+        ])
+        self.assertEqual(r, {"added": 2, "skipped": 2})
+        rows = storage.all_items("s1")
+        self.assertEqual([(i["title"], i["status"]) for i in rows if i["title"] == "Купить хлеб"], [("Купить хлеб", "done")])
+        meet = [i for i in rows if i["kind"] == "meeting"][0]
+        self.assertEqual((meet["due_date"], meet["due_time"]), (None, None))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -102,3 +102,39 @@ def query_stems(query: str) -> list:
 def match_score(stems: list, title: str) -> int:
     title_words = words(title)
     return sum(1 for s in stems if any(w.startswith(s) for w in title_words))
+
+
+# ---------- повторяющиеся записи ----------
+# Повтор раскладывается на отдельные записи на ближайший период (горизонт ниже) — так они видны в списке, поиске и CSV.
+REPEAT_COUNT = {"daily": 14, "weekdays": 10, "weekly": 8, "monthly": 6}
+REPEAT_EACH = ["каждый понедельник", "каждый вторник", "каждую среду", "каждый четверг", "каждую пятницу", "каждую субботу",
+               "каждое воскресенье"]
+
+
+def add_months(d: date, k: int) -> date:
+    y, m = divmod(d.month - 1 + k, 12)
+    y, m = d.year + y, m + 1
+    last = [31, 29 if y % 4 == 0 and (y % 100 or y % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
+    return date(y, m, min(d.day, last))
+
+
+def repeat_dates(start: date, repeat: str) -> list:
+    """Даты повторяющейся записи, начиная с start (для «по будням» старт переносится с выходного на понедельник)."""
+    n = REPEAT_COUNT[repeat]
+    if repeat == "daily":
+        return [start + timedelta(days=i) for i in range(n)]
+    if repeat == "weekly":
+        return [start + timedelta(days=7 * i) for i in range(n)]
+    if repeat == "monthly":
+        return [add_months(start, i) for i in range(n)]
+    out, d = [], start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def repeat_phrase(repeat: str, start: date) -> str:
+    return {"daily": "каждый день", "weekdays": "по будням", "weekly": REPEAT_EACH[start.weekday()],
+            "monthly": f"каждый месяц, {start.day}-го числа"}[repeat]

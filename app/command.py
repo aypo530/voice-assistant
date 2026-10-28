@@ -4,6 +4,7 @@ from typing import Optional
 
 INTENTS = {"create", "list", "search", "complete", "delete", "update", "clarify", "other"}
 KINDS = {"task", "meeting", "reminder"}
+REPEATS = {"daily", "weekdays", "weekly", "monthly"}
 
 
 @dataclass
@@ -18,6 +19,7 @@ class Command:
     range_end: Optional[str] = None
     query: Optional[str] = None
     ref: Optional[str] = None      # "last" — «последнюю запись», "it" — «её / эту» (последняя упомянутая)
+    repeat: Optional[str] = None   # daily | weekdays | weekly | monthly — повторяющаяся запись
     reply: Optional[str] = None
 
     @classmethod
@@ -30,4 +32,6 @@ class Command:
             cmd.intent = "other"
         if cmd.kind not in KINDS:
             cmd.kind = None
+        if cmd.repeat not in REPEATS:
+            cmd.repeat = None
         return cmd

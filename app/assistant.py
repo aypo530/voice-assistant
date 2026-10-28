@@ -9,7 +9,7 @@ import logging
 import re
 import threading
 from collections import OrderedDict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,8 @@ import search
 import storage
 import stt_local
 from command import Command, KINDS
-from textutil import parse_date, parse_time, period_phrase, human_date, short_date, when_phrase, WEEKDAYS_SHORT
+from textutil import (parse_date, parse_time, period_phrase, human_date, short_date, when_phrase, WEEKDAYS_SHORT,
+                      REPEAT_COUNT, repeat_dates, repeat_phrase)
 
 log = logging.getLogger("assistant")
 
@@ -159,10 +160,13 @@ class Assistant:
             return "Что именно нужно записать?", "clarify"
         d, t = parse_date(cmd.date), parse_time(cmd.time)
         label = KIND_LABEL[kind]
+        repeat = cmd.repeat if cmd.repeat in REPEAT_COUNT else None
+        if repeat and not d:                       # «каждый день …» без даты — начинаем с ближайшего подходящего дня
+            d = today if (not t or t > now.strftime("%H:%M")) else today + timedelta(days=1)
 
         if kind in ("meeting", "reminder"):
             noun = "встречу" if kind == "meeting" else "напоминание"
-            partial = {"kind": kind, "title": title, "date": d.isoformat() if d else None, "time": t}
+            partial = {"kind": kind, "title": title, "date": d.isoformat() if d else None, "time": t, "repeat": repeat}
             if not d and not t:
                 sess.pending = partial
                 return f"На какой день и время поставить {noun}?", "clarify"
@@ -174,6 +178,9 @@ class Assistant:
                 return f"На какое время поставить {noun}?", "clarify"
             if datetime.combine(d, datetime.strptime(t, "%H:%M").time(), tzinfo=now.tzinfo) < now.replace(second=0, microsecond=0):
                 return "Это время уже прошло. На какую дату и время поставить?", "clarify"
+
+        if repeat:
+            return self._create_repeating(kind, title, d, t, repeat, now, user, sess)
 
         dd = d.isoformat() if d else None
         if storage.find_duplicate(user, kind, title, dd, t):
@@ -188,14 +195,55 @@ class Assistant:
             reply += f"\nВнимание: в это время уже есть встреча «{conflicts[0]['title']}»."
         return reply, "create"
 
+    def _create_repeating(self, kind: str, title: str, start, t: Optional[str], repeat: str, now: datetime, user: str, sess: Session):
+        """Повторяющаяся запись = серия обычных записей на ближайший период."""
+        label = KIND_LABEL[kind]
+        dates = repeat_dates(start, repeat)
+        added = skipped = 0
+        conflict = None
+        first_id = None
+        for d in dates:
+            dd = d.isoformat()
+            if storage.find_duplicate(user, kind, title, dd, t):
+                skipped += 1
+                continue
+            if kind == "meeting" and t and conflict is None:
+                found = storage.find_meetings_at(user, dd, t)
+                if found:
+                    conflict = (d, found[0]["title"])
+            row = storage.add_item(user, kind, title, dd, t, now.isoformat(timespec="seconds"))
+            first_id = first_id or row.get("id")
+            added += 1
+        sess.last_id = first_id or sess.last_id
+        if not added:
+            return f"{'Такое повторяющееся' if kind == 'reminder' else 'Такая повторяющаяся'} {label} уже есть: «{title}».", "create"
+        every = repeat_phrase(repeat, dates[0]) + (f" в {t}" if t else "")
+        adj = "повторяющееся" if kind == "reminder" else "повторяющаяся"
+        reply = (f"Записано: {adj} {label} «{title}» — {every}. Создано записей: {added}, "
+                 f"до {short_date(dates[-1], now.date())}.")
+        if skipped:
+            reply += f" Уже были: {skipped}."
+        if conflict:
+            reply += f"\nВнимание: {human_date(conflict[0], now.date())} в это время уже есть встреча «{conflict[1]}»."
+        return reply, "create"
+
     # ---------- список ----------
     def _list(self, cmd: Command, now: datetime, user: str) -> str:
         today = now.date()
+        kinds = KIND_FILTER.get(cmd.kind or "")
+        if (cmd.range_start or "").lower() == "all":              # период не назван — показываем всё
+            rows = storage.all_items(user, kinds)
+            what = {"meeting": "встречи", "task": "задачи", "reminder": "напоминания"}.get(cmd.kind or "", "записи")
+            if not rows:
+                return f"Пока нет ни одной записи." if not cmd.kind else f"Пока нет ни одной записи такого типа."
+            shown = rows[:30]
+            lines = [self._line(r, today, with_date=True) for r in shown]
+            more = f"\n…и ещё {len(rows) - len(shown)}." if len(rows) > len(shown) else ""
+            return f"Все {what}: {len(rows)}.\n" + "\n".join(lines) + more
         start = parse_date(cmd.range_start) or parse_date(cmd.date) or today
         end = parse_date(cmd.range_end) or start
         if end < start:
             start, end = end, start
-        kinds = KIND_FILTER.get(cmd.kind or "")
         rows = storage.list_range(user, start.isoformat(), end.isoformat(), kinds)
         phrase = period_phrase(start, end, today)
         what = {"meeting": "Встреч", "task": "Задач"}.get(cmd.kind or "", "Записей")
@@ -365,6 +413,22 @@ class Assistant:
         if due_time and not due_date:
             raise ValueError("Укажите дату вместе со временем.")
         return storage.update(user, item_id, **changes)
+
+    def import_items(self, user: str, items: list) -> dict:
+        """Добавляет записи, пришедшие из браузера (созданные без связи или восстановленные из файла). Дубликаты и мусор пропускаются."""
+        added = skipped = 0
+        for it in items:
+            kind, title = it.get("kind"), (it.get("title") or "").strip()[:300]
+            d, t = parse_date(it.get("date")), parse_time(it.get("time"))
+            dd = d.isoformat() if d else None
+            if kind not in KIND_LABEL or not title or storage.find_duplicate(user, kind, title, dd, t):
+                skipped += 1
+                continue
+            row = storage.add_item(user, kind, title, dd, t, str(it.get("created_at") or ""))
+            if it.get("status") == "done":
+                storage.update(user, row["id"], status="done")
+            added += 1
+        return {"added": added, "skipped": skipped}
 
     def delete_item(self, user: str, item_id: int) -> None:
         if not storage.delete(user, item_id):

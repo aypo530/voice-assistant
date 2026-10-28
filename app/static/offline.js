@@ -36,8 +36,8 @@ function rx(src, flags) {
 }
 const rxs = (src) => rx(src);                       // для search / test (без g)
 const rxStart = (src) => rx('^(?:' + src + ')');    // как re.match
-function search(src, s) { return rxs(src).exec(s); }
-function test(src, s) { return rxs(src).test(s); }
+function search(src, s, flags) { return rx(src, flags).exec(s); }
+function test(src, s, flags) { return rx(src, flags).test(s); }
 function sub(src, repl, s, flags) { return s.replace(rx(src, 'g' + (flags || '')), repl); }
 
 // ---------------------------------------------------------------- даты
@@ -281,6 +281,13 @@ function newParsed() {
   return { date: null, time: null, week_shift: 0, this_week: false, weekend: false, to_week_end: false, range: null, relative_time: false };
 }
 
+const MON_STEMS = ['январ', 'феврал', 'март', 'апрел', 'ма', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
+function monthRange(month, today, named) {      // month: 1..12 (может выйти за пределы — соседний год)
+  let year = today.getUTCFullYear();
+  if (month < 1) { month += 12; year -= 1; } else if (month > 12) { month -= 12; year += 1; }
+  if (named && (today.getUTCMonth() + 1) - month > 6) year += 1;
+  return [mkDate(year, month, 1), mkDate(year, month, monthLen(year, month))];
+}
 function scanWhen(t, now) {
   const p = newParsed();
   const today = now.date;
@@ -316,6 +323,16 @@ function scanWhen(t, now) {
   if ((m = t.search(String.raw`\b(?:в|на)\s+(?:этом|текущем)\s+месяц\w*|\bна\s+месяц\b`))) {
     p.range = [today, mkDate(today.getUTCFullYear(), today.getUTCMonth() + 1, monthLen(today.getUTCFullYear(), today.getUTCMonth() + 1))];
     t.take(m);
+  }
+  if ((m = t.search(String.raw`\b(?:в|на|за)\s+прошл\w+\s+недел\w+`))) {
+    const mon = addDays(monday(today), -7);
+    p.range = [mon, addDays(mon, 6)]; t.take(m);
+  }
+  if ((m = t.search(String.raw`\b(?:в|на|за)\s+прошл\w+\s+месяц\w*`))) { p.range = monthRange(today.getUTCMonth(), today, false); t.take(m); }
+  if ((m = t.search(String.raw`\b(?:в|на|за)\s+(?:следующ\w+|будущ\w+)\s+месяц\w*`))) { p.range = monthRange(today.getUTCMonth() + 2, today, false); t.take(m); }
+  if ((m = t.search(String.raw`\b(?:в|на|за)\s+(?<mn>январ[еья]|феврал[еья]|март[е]?|апрел[еья]|ма[йе]|июн[еья]|июл[еья]|август[е]?|сентябр[еья]|октябр[еья]|ноябр[еья]|декабр[еья])\b(?!\s*\d)`))) {
+    const mi = MON_STEMS.findIndex(st => m.groups.mn.startsWith(st)) + 1;
+    p.range = monthRange(mi, today, mi !== today.getUTCMonth() + 1); t.take(m);
   }
 
   if (p.date === null && (m = t.search(String.raw`\b(\d{4})-(\d{2})-(\d{2})\b`))) {
@@ -367,6 +384,12 @@ function scanWhen(t, now) {
 
 const RE_HELP = String.raw`\b(?:что\s+ты\s+(?:умеешь|можешь)|помощь|помоги\s+мне\s+разобраться|как\s+тобой\s+пользоваться|как\s+(?:это\s+)?работает)\b`;
 const RE_GREET = String.raw`^(?:привет\w*|здравствуй\w*|добрый\s+(?:день|вечер|утро)|доброе\s+утро|хай|hello|hi|спасибо\w*|благодар\w+|пока|до\s+свидания|ок|окей|ясно|понятно|отлично|хорошо)\W*$`;
+function greetReply(n) {
+  if (/^(?:спасибо|благодар)/u.test(n)) return 'Пожалуйста! Если нужно что-то записать или найти — скажите.';
+  if (/^(?:пока|до\s+свидания)/u.test(n)) return 'До свидания! Ваши записи сохранены.';
+  if (/^(?:ок|окей|ясно|понятно|отлично|хорошо)/u.test(n)) return 'Хорошо. Что записать или найти?';
+  return 'Здравствуйте! Что записать или найти? Например: «Напомни завтра в 10 позвонить Ивану».';
+}
 const RE_CANCEL = String.raw`^(?:нет|отмена|отмени\w*|не\s+надо|не\s+нужно|забудь|стоп)\b`;
 const RE_COMPLETE = String.raw`\b(?:отмет\w+|помет\w+|закро\w+|заверш\w+)\b.*\b(?:выполнен\w+|сделан\w+|готов\w+|заверш\w+)\b` +
   String.raw`|\b(?:отмет\w+|помет\w+|закро\w+)\s+(?:задач\w*|встреч\w*|напоминани\w*|дел\w*)` +
@@ -382,26 +405,32 @@ const RE_DELETE = String.raw`^(?:пожалуйста\s+)?(?:удали\w*|со�
 const RE_UPDATE = String.raw`\b(?:перенеси\w*|перенести|перемести\w*|передвин\w*|сдвин\w*|отложи\w*|поменяй\w*\s+(?:время|дат\w*)|измени\w*\s+(?:время|дат\w*))\b`;
 const RE_FIND = String.raw`\b(?:найди|найти|найдешь|поищи|поискать|искать|ищи|отыщи|вспомни|подскажи\s+где)\b`;
 const RE_LIST = [
-  String.raw`^(?:а\s+)?(?:что|чем)\s+(?:у\s+меня|мне|запланирован\w*|намечен\w*|на\b|по\s+план|в\b|есть|буд\w+)`,
+  String.raw`^(?:а\s+)?(?:что|чем)\s+(?:у\s+меня|мне|запланирован\w*|намечен\w*|на\b|по\s+план|в\b|есть|буд\w+|был[аио]?\b)`,
   String.raw`\bкакие\s+(?:у\s+меня\s+)?(?:планы|задачи|встречи|дела|напоминания|события)\b`,
   String.raw`\b(?:покажи|показать|выведи|назови|перечисли|расскажи|скажи)\b`,
   String.raw`\b(?:есть|будут|будет)\s+ли\b`,
   String.raw`\bсписок\s+(?:задач|встреч|дел|планов)\b|\bрасписание\b|\bповестка\b|\bпланы\s+на\b|\bчто\s+по\s+план`,
   String.raw`\bсколько\s+(?:у\s+меня\s+)?(?:задач|встреч|дел)\b`,
+  String.raw`\bмо[иеёя]\s+(?:дела|планы|задачи|встречи|записи|напоминания)\b`,
+  String.raw`^(?:а\s+)?что\s+я\s+(?:планировал\w*|запланировал\w*|делал\w*|собирался)\b`,
+  String.raw`^(?:а\s+)?что\s+(?:мне\s+)?(?:нужно|надо|делать|предстоит|сделать)\b`,
+  String.raw`\b(?:все|всё)\s+(?:мои\s+)?(?:задачи|встречи|записи|напоминания|дела|планы)\b`,
 ];
+const RE_ALL = String.raw`\b(?:все|всё|всех)\b`;
 const RE_WHEN_SEARCH = String.raw`\bкогда\b.*\b(?:был[аио]?|были|ставил\w*|поставил\w*|создавал\w*|записывал\w*|планировал\w*|назначал\w*)\b` +
   String.raw`|\bкогда\s+(?:у\s+меня\s+)?(?:встреча|задача|напоминание|созвон)\b` +
+  String.raw`|\bесть\s+(?:ли\s+)?что[\s-]?(?:нибудь|то)\s+(?:про|о|об|по)\b` +
   String.raw`|\bя\s+(?:когда-?то|как-?то|ранее|раньше|давно)\b|\bпомнишь\b|\bгде\s+(?:моя\s+|мое\s+)?(?:задача|встреча|запись|напоминание)\b`;
-const RE_CREATE_VERB = String.raw`\b(?:напомни\w*|поставь|поставить|добавь|добавить|создай|создать|запиши|записать|запланируй|запланировать|` +
+const RE_CREATE_VERB = String.raw`\b(?:напомни\w*|напоминай\w*|поставь|поставить|добавь|добавить|создай|создать|запиши|записать|запланируй|запланировать|` +
   String.raw`назначь|назначить|внеси|не\s+забудь|нужно|надо|необходимо|пора)\b`;
-const RE_REMINDER = String.raw`\bнапомни\w*|\bнапоминани\w*`;
+const RE_REMINDER = String.raw`\bнапомни\w*|\bнапоминай\w*|\bнапоминани\w*|\bне\s+забуд\w*`;
 const RE_MEETING = String.raw`\b(?:встреч\w*|созвон\w*|совещани\w*|планерк\w*|митинг\w*|собеседовани\w*|прием\w*|визит\w*|консультаци\w*)` +
   String.raw`|\b(?:к|у)\s+(?:врач\w*|стоматолог\w*|доктор\w*|парикмахер\w*|терапевт\w*|окулист\w*)`;
 const KIND_NOUNS = [['meeting', String.raw`\b(?:встреч\w*|созвон\w*|совещани\w*)`], ['task', String.raw`\bзадач\w*|\bдел[оа]\b`], ['reminder', String.raw`\bнапоминани\w*`]];
 const Q_DROP = String.raw`\b(?:найди|найти|найдешь|поищи|поискать|искать|ищи|отыщи|вспомни|покажи|показать|скажи|подскажи|расскажи|` +
   String.raw`когда|где|что|какая|какой|какую|какие|был[аио]?|были|будет|будут|ставил\w*|поставил\w*|создавал\w*|создал\w*|` +
   String.raw`записывал\w*|записал\w*|добавлял\w*|планировал\w*|назначал\w*|у\s+меня|мне|мой|моя|мою|мои|мое|ее|его|их|` +
-  String.raw`я|мы|ты|вы|когда-?то|как-?то|ранее|раньше|давно|помнишь|пожалуйста|ли|задач\w*|встреч\w*|напоминани\w*|` +
+  String.raw`есть|нибудь|я|мы|ты|вы|когда-?то|как-?то|ранее|раньше|давно|помнишь|пожалуйста|ли|задач\w*|встреч\w*|напоминани\w*|` +
   String.raw`запис\w*|дело|дела|дел|про|по|о|об|обо|насчет|относительно|связанн\w*|касающ\w*|` +
   String.raw`с|со|в|во|на|к|для|из|от|и|а|но|то|же|бы|это|эту|этот|уже|отмет\w+|помет\w+|закро\w+|заверш\w+|` +
   String.raw`выполнен\w*|выполнил\w*|сделан\w*|сделал\w*|закончил\w*|готов\w*|галочк\w*|поставь|как|что|которую|который)\b`;
@@ -412,7 +441,59 @@ const Q_KIND = String.raw`\b(?:задач\w*|встреч\w*|напоминан�
 
 function newCmd(transcript) {
   return { intent: 'other', transcript: transcript || '', kind: null, title: null, date: null, time: null,
-    range_start: null, range_end: null, query: null, ref: null, reply: null };
+    range_start: null, range_end: null, query: null, ref: null, repeat: null, reply: null };
+}
+const WD_ACC = { 'понедельник': 'в понедельник', 'вторник': 'во вторник', 'сред': 'в среду', 'четверг': 'в четверг',
+  'пятниц': 'в пятницу', 'суббот': 'в субботу', 'воскресень': 'в воскресенье' };
+const RE_REPEAT_WD = String.raw`\b(?:кажд(?:ый|ую|ое)|по)\s+(понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)\w*`;
+const RE_REPEAT_OTHER = [
+  ['weekdays', String.raw`\b(?:кажд(?:ый|ые)\s+будн\w+(?:\s+(?:день|дни))?|по\s+будн\w+|в\s+будни)\b`],
+  ['daily', String.raw`\b(?:кажд(?:ый|ые)\s+(?:день|дни|сутки)|ежедневно)\b`],
+  ['weekly', String.raw`\b(?:кажд(?:ую|ые)\s+недел\w+|еженедельно|раз\s+в\s+неделю)\b`],
+  ['monthly', String.raw`\b(?:кажд(?:ый|ые)\s+месяц\w*|ежемесячно|раз\s+в\s+месяц)\b`],
+];
+const RE_DAY_NUM = String.raw`\b(\d{1,2})(?:-?го)?\s+числа\b`;
+function extractRepeat(text, today) {
+  let m = search(RE_REPEAT_WD, text, 'i');
+  if (m) return [text.slice(0, m.index) + WD_ACC[m[1].toLowerCase()] + text.slice(m.index + m[0].length), 'weekly'];
+  for (const [rp, pat] of RE_REPEAT_OTHER) {
+    if (!test(pat, text, 'i')) continue;
+    if (rp === 'monthly' && today) {
+      const dm = search(RE_DAY_NUM, text, 'i');
+      if (dm && +dm[1] >= 1 && +dm[1] <= 28) {
+        const day = +dm[1];
+        const d0 = today.getUTCDate() <= day ? mkDate(today.getUTCFullYear(), today.getUTCMonth() + 1, day)
+          : (() => { const nm = addMonths(mkDate(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), 1); return mkDate(nm.getUTCFullYear(), nm.getUTCMonth() + 1, day); })();
+        text = text.slice(0, dm.index) + `${day} ${MONTHS[d0.getUTCMonth()]}` + text.slice(dm.index + dm[0].length);
+      }
+    }
+    return [sub(pat, ' ', text, 'i').replace(/\s+/g, ' ').trim(), rp];
+  }
+  return [text, null];
+}
+
+// ---------------------------------------------------------------- повторяющиеся записи (серия обычных записей)
+const REPEAT_COUNT = { daily: 14, weekdays: 10, weekly: 8, monthly: 6 };
+const REPEAT_EACH = ['каждый понедельник', 'каждый вторник', 'каждую среду', 'каждый четверг', 'каждую пятницу', 'каждую субботу', 'каждое воскресенье'];
+function addMonths(d, k) {
+  let y = d.getUTCFullYear(), m = d.getUTCMonth() + k;
+  y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;
+  const leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0));
+  const last = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m];
+  return mkDate(y, m + 1, Math.min(d.getUTCDate(), last));
+}
+const pyWeekday = (d) => (d.getUTCDay() + 6) % 7;
+function repeatDates(start, repeat) {
+  const n = REPEAT_COUNT[repeat], out = [];
+  if (repeat === 'daily') for (let i = 0; i < n; i++) out.push(addDays(start, i));
+  else if (repeat === 'weekly') for (let i = 0; i < n; i++) out.push(addDays(start, 7 * i));
+  else if (repeat === 'monthly') for (let i = 0; i < n; i++) out.push(addMonths(start, i));
+  else { let d = start; while (out.length < n) { if (pyWeekday(d) < 5) out.push(d); d = addDays(d, 1); } }
+  return out;
+}
+function repeatPhrase(repeat, start) {
+  return { daily: 'каждый день', weekdays: 'по будням', weekly: REPEAT_EACH[pyWeekday(start)],
+    monthly: `каждый месяц, ${start.getUTCDate()}-го числа` }[repeat];
 }
 function kindFromNouns(n) {
   const found = KIND_NOUNS.filter(([, pat]) => test(pat, n)).map(([k]) => k);
@@ -425,7 +506,7 @@ function queryOf(n) {
 }
 function titleClean(t, kind) {
   t.takeAll(String.raw`\b(?:пожалуйста|плиз)\b`);
-  t.takeAll(String.raw`\bнапомни(?:ть)?(?:\s+мне)?\b`);
+  t.takeAll(String.raw`\bнапомни(?:ть)?(?:\s+мне)?\b|\bнапоминай(?:те)?(?:\s+мне)?\b|\bне\s+забудь(?:те)?\b`);
   t.takeAll(String.raw`\b(?:поставь|поставить|добавь|добавить|создай|создать|запиши|записать|запланируй|запланировать|` +
     String.raw`внеси|сделай|назначь|назначить)\s+(?:мне\s+)?(?:новую\s+|новое\s+)?(?:задач\w*|напоминани\w*|заметк\w*)?`);
   t.takeAll(String.raw`\b(?:мне\s+)?(?:нужно|надо|необходимо|придется|не\s+забудь|не\s+забыть|пора)\b`);
@@ -477,7 +558,7 @@ function buildCreate(cmd, t, p, now, pending) {
     const tm = p.time || pending.time || null;
     if (p.to_week_end && !d) d = addDays(monday(today), 6);
     cmd.intent = 'create'; cmd.kind = kind; cmd.title = title;
-    cmd.date = d ? iso(d) : null; cmd.time = tm;
+    cmd.date = d ? iso(d) : null; cmd.time = tm; cmd.repeat = pending.repeat || null;
     return cmd;
   }
   const kind = test(RE_REMINDER, n) ? 'reminder' : (test(RE_MEETING, n) ? 'meeting' : 'task');
@@ -501,7 +582,7 @@ function parseCommand(text, now, pending) {
   const today = now.date;
 
   if (pending && test(RE_CANCEL, n)) { cmd.intent = 'other'; cmd.reply = 'Хорошо, не буду добавлять.'; return cmd; }
-  if (test(RE_GREET, n)) { cmd.intent = 'other'; cmd.reply = null; return cmd; }
+  if (test(RE_GREET, n)) { cmd.intent = 'other'; cmd.reply = greetReply(n); return cmd; }
   if (test(RE_HELP, n)) { cmd.intent = 'other'; return cmd; }
 
   if (!n.includes('?') && test(RE_DELETE, n)) return asTarget(cmd, text, n, now, 'delete');
@@ -517,9 +598,11 @@ function parseCommand(text, now, pending) {
     const t = new Text(text);
     const p = scanWhen(t, now);
     const hasPeriod = !!(p.date || p.range || p.week_shift || p.this_week || p.weekend || p.to_week_end);
-    if (!hasPeriod && queryOf(t.remainderNorm()) && test(String.raw`\bпокажи|показать|выведи|назови|перечисли\b`, n)) return asSearch(cmd, text, n, now);
-    const [start, end] = listPeriod(p, today);
+    const rest = queryOf(sub(RE_ALL, ' ', t.remainderNorm()));
+    if (!hasPeriod && rest && test(String.raw`\bпокажи|показать|выведи|назови|перечисли\b`, n)) return asSearch(cmd, text, n, now);
     cmd.intent = 'list'; cmd.kind = kindFromNouns(n);
+    if (!hasPeriod && !rest && (test(RE_ALL, n) || cmd.kind || test(String.raw`\bесть\b|\bсколько\b|\bмо[иеёя]\b`, n))) { cmd.range_start = 'all'; return cmd; }
+    const [start, end] = listPeriod(p, today);
     cmd.range_start = iso(start); cmd.range_end = iso(end);
     return cmd;
   }
@@ -557,13 +640,18 @@ function parseCommand(text, now, pending) {
     }
   }
 
-  const hasVerb = test(RE_CREATE_VERB, n);
+  let repeat;
+  [text, repeat] = extractRepeat(text, now.date);
+  const n6 = text.toLowerCase().replace(/ё/g, 'е');
+  const hasVerb = test(RE_CREATE_VERB, n6);
   const t = new Text(text);
   const p = scanWhen(t, now);
-  const isMeeting = test(RE_MEETING, n);
-  if (n.includes('?') && !hasVerb) { cmd.intent = 'other'; return cmd; }
-  if (!(hasVerb || hasWhen(p) || isMeeting) && n.split(/\s+/).filter(Boolean).length < 2) { cmd.intent = 'other'; return cmd; }
-  return buildCreate(cmd, t, p, now, null);
+  const isMeeting = test(RE_MEETING, n6);
+  if (n6.includes('?') && !hasVerb) { cmd.intent = 'other'; return cmd; }
+  if (!(hasVerb || hasWhen(p) || isMeeting) && n6.split(/\s+/).filter(Boolean).length < 2) { cmd.intent = 'other'; return cmd; }
+  buildCreate(cmd, t, p, now, null);
+  cmd.repeat = repeat;
+  return cmd;
 }
 
 // ---------------------------------------------------------------- хранилище (localStorage) и журнал изменений
@@ -662,15 +750,18 @@ function doCreate(cmd, now, s) {
   const today = now.date, kind = cmd.kind || 'task';
   const title = (cmd.title || '').replace(/^[ .,!?]+|[ .,!?]+$/g, '');
   if (!title) return ['Что именно нужно записать?', 'clarify'];
-  const d = parseDate(cmd.date), t = parseTime(cmd.time), label = KIND_LABEL[kind];
+  let d = parseDate(cmd.date); const t = parseTime(cmd.time), label = KIND_LABEL[kind];
+  const repeat = REPEAT_COUNT[cmd.repeat] ? cmd.repeat : null;
+  if (repeat && !d) d = (!t || t > now.hm) ? today : addDays(today, 1);
   if (kind === 'meeting' || kind === 'reminder') {
     const noun = kind === 'meeting' ? 'встречу' : 'напоминание';
-    const partial = { kind, title, date: d ? iso(d) : null, time: t };
+    const partial = { kind, title, date: d ? iso(d) : null, time: t, repeat };
     if (!d && !t) { s.pending = partial; return [`На какой день и время поставить ${noun}?`, 'clarify']; }
     if (!d) { s.pending = partial; return ['На какой день?', 'clarify']; }
     if (!t) { s.pending = partial; return [`На какое время поставить ${noun}?`, 'clarify']; }
     if (pastNow(d, t, now)) return ['Это время уже прошло. На какую дату и время поставить?', 'clarify'];
   }
+  if (repeat) return doCreateRepeating(kind, title, d, t, repeat, now, s);
   const dd = d ? iso(d) : null;
   if (store.findDuplicate(kind, title, dd, t)) {
     return [`Такая ${label} уже есть: «${title}»` + (d || t ? ` — ${whenPhrase(d, t, today)}.` : '.'), 'create'];
@@ -683,8 +774,35 @@ function doCreate(cmd, now, s) {
   if (conflicts.length) reply += `\nВнимание: в это время уже есть встреча «${conflicts[0].title}».`;
   return [reply, 'create'];
 }
+function doCreateRepeating(kind, title, start, t, repeat, now, s) {
+  const label = KIND_LABEL[kind], dates = repeatDates(start, repeat);
+  let added = 0, skipped = 0, conflict = null, firstId = null;
+  for (const d of dates) {
+    const dd = iso(d);
+    if (store.findDuplicate(kind, title, dd, t)) { skipped++; continue; }
+    if (kind === 'meeting' && t && conflict === null) { const f = store.meetingsAt(dd, t); if (f.length) conflict = [d, f[0].title]; }
+    const row = store.add(kind, title, dd, t, `${iso(now.date)}T${now.hm}:00`);
+    if (firstId === null) firstId = row.id;
+    added++;
+  }
+  if (firstId !== null) s.last_id = firstId;
+  if (!added) return [`${kind === 'reminder' ? 'Такое повторяющееся' : 'Такая повторяющаяся'} ${label} уже есть: «${title}».`, 'create'];
+  const every = repeatPhrase(repeat, dates[0]) + (t ? ` в ${t}` : '');
+  const adj = kind === 'reminder' ? 'повторяющееся' : 'повторяющаяся';
+  let reply = `Записано: ${adj} ${label} «${title}» — ${every}. Создано записей: ${added}, до ${shortDate(dates[dates.length - 1], now.date)}.`;
+  if (skipped) reply += ` Уже были: ${skipped}.`;
+  if (conflict) reply += `\nВнимание: ${humanDate(conflict[0], now.date)} в это время уже есть встреча «${conflict[1]}».`;
+  return [reply, 'create'];
+}
 function doList(cmd, now) {
   const today = now.date;
+  if ((cmd.range_start || '').toLowerCase() === 'all') {          // период не назван — показываем всё
+    const rows = store.all(KIND_FILTER[cmd.kind || '']);
+    const what = { meeting: 'встречи', task: 'задачи', reminder: 'напоминания' }[cmd.kind || ''] || 'записи';
+    if (!rows.length) return !cmd.kind ? 'Пока нет ни одной записи.' : 'Пока нет ни одной записи такого типа.';
+    const shown = rows.slice(0, 30);
+    return `Все ${what}: ${rows.length}.\n` + shown.map(r => line(r, today, true)).join('\n') + (rows.length > shown.length ? `\n…и ещё ${rows.length - shown.length}.` : '');
+  }
   let start = parseDate(cmd.range_start) || parseDate(cmd.date) || today;
   let end = parseDate(cmd.range_end) || start;
   if (end.getTime() < start.getTime()) [start, end] = [end, start];

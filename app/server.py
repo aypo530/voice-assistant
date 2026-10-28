@@ -197,26 +197,10 @@ class ImportIn(BaseModel):
 @app.post("/api/import")
 def import_items(body: ImportIn, request: Request):
     """Принимает записи, созданные без связи (или восстановленные из копии на устройстве). Дубликаты пропускаются."""
-    uid = _uid(request)
-    added = skipped = 0
-    for it in body.items[:300]:
-        title = (it.title or "").strip()[:300]
-        date = it.date if it.date and re.fullmatch(r"\d{4}-\d{2}-\d{2}", it.date) else None
-        time = it.time if it.time and re.fullmatch(r"\d{2}:\d{2}", it.time) else None
-        if it.kind not in ("task", "reminder", "meeting") or not title:
-            skipped += 1
-            continue
-        try:
-            if storage.find_duplicate(uid, it.kind, title, date, time):
-                skipped += 1
-                continue
-            row = storage.add_item(uid, it.kind, title, date, time, it.created_at or "")
-            if it.status == "done":
-                storage.update(uid, row["id"], status="done")
-            added += 1
-        except storage.StorageError as e:
-            raise HTTPException(500, str(e))
-    return {"added": added, "skipped": skipped}
+    try:
+        return assistant.import_items(_uid(request), [it.model_dump() for it in body.items[:300]])
+    except storage.StorageError as e:
+        raise HTTPException(500, str(e))
 
 
 @app.get("/api/export.csv")
