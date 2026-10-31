@@ -46,7 +46,9 @@ GIGACHAT_FALLBACK_MODELS = [m.strip() for m in os.getenv(
 GIGACHAT_AUDIO_MODEL = os.getenv("GIGACHAT_AUDIO_MODEL", "GigaChat-2-Max").strip()
 GIGACHAT_EMBED_MODEL = os.getenv("GIGACHAT_EMBED_MODEL", "Embeddings").strip()
 GIGACHAT_EMBED_FLOOR = float(os.getenv("GIGACHAT_EMBED_FLOOR", "0.62"))   # порог похожести для поиска по смыслу
-GIGACHAT_STRUCTURED = _flag("GIGACHAT_STRUCTURED", "1")     # просить у модели строгий JSON по схеме (response_format)
+# Строгий JSON по схеме (response_format). На части тарифов GigaChat отвечает на него 200 с ПУСТЫМ content,
+# поэтому по умолчанию выключено: модель и так возвращает JSON, а разбор его проверяет.
+GIGACHAT_STRUCTURED = _flag("GIGACHAT_STRUCTURED", "0")
 # Токен доступа живёт 30 минут: обновляем заранее, чтобы запросы не попадали на истёкший токен.
 GIGACHAT_TOKEN_REFRESH_S = int(os.getenv("GIGACHAT_TOKEN_REFRESH_S", "300"))   # за сколько секунд до истечения обновлять
 GIGACHAT_CA_BUNDLE = os.getenv("GIGACHAT_CA_BUNDLE", "").strip()               # свой CA-бандл (по умолчанию — встроенный)

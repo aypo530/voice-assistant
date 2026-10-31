@@ -104,6 +104,11 @@ def current_key() -> str:
     return _req_key.get() or config.GIGACHAT_AUTH_KEY
 
 
+def request_key() -> str:
+    """Ключ, присланный браузером (или пустая строка, если его нет)."""
+    return _req_key.get()
+
+
 def _kid(key: Optional[str] = None) -> str:
     return hashlib.sha1((key if key is not None else current_key()).encode()).hexdigest()[:12]
 
@@ -467,7 +472,7 @@ def _chat_once(model: str, messages: list, attachments: Optional[list], schema: 
         if used_schema:
             body["response_format"] = {"type": "json_schema", "schema": used_schema, "strict": True}
         try:
-            return _content(_post("/chat/completions", key, json=body,
+            text = _content(_post("/chat/completions", key, json=body,
                                   **({"timeout": timeout} if timeout else {})))
         except _BadRequest as e:
             if used_schema:                               # модель/версия не принимает схему — просим JSON промптом
@@ -476,6 +481,17 @@ def _chat_once(model: str, messages: list, attachments: Optional[list], schema: 
                 log.info("GigaChat: модель %s не приняла JSON-схему (%s) — прошу JSON в промпте", model, e.detail[:120])
                 continue
             raise
+        if text.strip():
+            return text
+        if used_schema:
+            # Бывает 200 с пустым content, когда запрошена строгая схема: повторяем без response_format
+            # и запоминаем, что этой модели схема не подходит (иначе теряли бы запрос на каждом вызове).
+            _schema_ok[model] = False
+            used_schema = None
+            log.info("GigaChat: модель %s вернула пустой ответ со схемой — повторяю без response_format", model)
+            continue
+        log.warning("GigaChat: модель %s вернула пустой ответ", model)
+        return text
 
 
 def _call(messages: list, attachments: Optional[list] = None, purpose: str = "text",
@@ -699,9 +715,33 @@ def _messages(now: datetime, history: list, text: Optional[str], audio: bool) ->
     return msgs
 
 
+def _drop_rejected_request_key(err: Exception) -> bool:
+    """Ключ из браузера отклонён GigaChat, а на сервере есть рабочий? Тогда работаем ключом сервера.
+
+    Типичный случай: пользователь перевыпустил ключ в кабинете, а в localStorage остался старый —
+    GigaChat отвечает 401 «credentials doesn't match db data», и раньше ассистент из-за этого
+    навсегда уходил в локальный режим, хотя ключ сервера рабочий.
+    """
+    if _req_key.get() and config.GIGACHAT_AUTH_KEY:
+        log.warning("Ключ из браузера отклонён (%s) — работаю ключом сервера", str(err)[:160])
+        _req_key.set("")
+        return True
+    return False
+
+
 def parse(now: datetime, history: list, text: Optional[str] = None,
           audio: Optional[bytes] = None, mime: str = "audio/wav") -> Command:
     """history — список (role, message), role = 'user' | 'assistant'."""
+    try:
+        return _parse(now, history, text, audio, mime)
+    except LLMAuthError as e:
+        if _drop_rejected_request_key(e):
+            return _parse(now, history, text, audio, mime)
+        raise
+
+
+def _parse(now: datetime, history: list, text: Optional[str] = None,
+           audio: Optional[bytes] = None, mime: str = "audio/wav") -> Command:
     messages = _messages(now, history, text, audio=bool(audio))
     if audio:
         file_id = _upload(audio, mime)
@@ -718,6 +758,15 @@ def parse(now: datetime, history: list, text: Optional[str] = None,
 
 def embed(texts: list, query: bool = False) -> list:
     """Эмбеддинги GigaChat для семантического поиска. Ошибки сети переводят ассистента в локальный режим."""
+    try:
+        return _embed(texts, query)
+    except LLMAuthError as e:
+        if _drop_rejected_request_key(e):
+            return _embed(texts, query)
+        raise
+
+
+def _embed(texts: list, query: bool = False) -> list:
     key = config._clean_key(current_key())
     if not key:
         raise LLMConfigError("Не задан ключ GigaChat.")

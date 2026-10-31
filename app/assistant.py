@@ -27,6 +27,15 @@ log = logging.getLogger("assistant")
 
 KIND_LABEL = {"task": "задача", "meeting": "встреча", "reminder": "напоминание"}
 KIND_FILTER = {"task": ("task", "reminder"), "meeting": ("meeting",), "reminder": ("reminder",)}
+
+
+def target_query(cmd: Command) -> str:
+    """Фраза, по которой ищем запись: что модель назвала «query», иначе — заголовок из «title».
+
+    Без строгой JSON-схемы модель часто заполняет только title, и раньше такой запрос
+    («Ивану я позвонил») отмечал выполненной последнюю запись вместо нужной.
+    """
+    return (getattr(cmd, "query", None) or getattr(cmd, "title", None) or "").strip()
 HELP = ("Я умею добавлять задачи, напоминания и встречи, показывать планы на любой период, искать старые записи, "
         "переносить и удалять их, отмечать задачи выполненными.")
 
@@ -196,6 +205,8 @@ class Assistant:
         today = now.date()
         kind = cmd.kind or "task"
         title = (cmd.title or "").strip(" .,!?")
+        if title and title[0].islower() and len(title) > 1:
+            title = title[0].upper() + title[1:]
         if not title:
             return "Что именно нужно записать?", "clarify"
         d, t = parse_date(cmd.date), parse_time(cmd.time)
@@ -317,6 +328,8 @@ class Assistant:
     def search_items(self, user: str, query: str, kind: Optional[str] = None) -> tuple:
         pool = storage.all_items(user, KIND_FILTER.get(kind or ""))
         found, mode = search.find(query, pool)
+        if not found and kind:                     # тип записи мог быть определён неверно — ищем по всем
+            found, mode = search.find(query, storage.all_items(user))
         if found and mode == "exact":
             found = sorted(found, key=lambda r: (r["due_date"] or "9999", r["due_time"] or "")) if query.strip() else found
         return found, mode
@@ -325,7 +338,7 @@ class Assistant:
         today = now.date()
         if not storage.all_items(user):
             return "Пока нет ни одной записи."
-        found, mode = self.search_items(user, cmd.query or heard, cmd.kind)
+        found, mode = self.search_items(user, target_query(cmd) or heard, cmd.kind)
         if not found:
             return "Ничего похожего не нашёл. Попробуйте назвать другое слово из записи."
         lines = [self._line(r, today, full_date=True, num=i) for i, r in enumerate(found, 1)]
@@ -437,6 +450,8 @@ class Assistant:
         verb = "Отметил выполненной" if done else "Вернул в работу"
         op = "complete" if done else "reopen"
         pool = [r for r in storage.all_items(user, KIND_FILTER.get(cmd.kind or "")) if r["status"] == want]
+        if not pool and cmd.kind:                  # «задача»/«встреча» определены неверно — смотрим все записи
+            pool = [r for r in storage.all_items(user) if r["status"] == want]
         if not pool:
             return "Невыполненных записей нет." if done else "Выполненных записей нет."
         new_status = "done" if done else "open"
@@ -454,23 +469,28 @@ class Assistant:
             if item["status"] != want:
                 return "Эта запись уже выполнена." if done else "Эта запись и так не отмечена выполненной."
             return apply(item)
+        q = target_query(cmd)
         if cmd.ref == "all":
-            found = search.find(cmd.query, pool, limit=50)[0] if cmd.query else pool
+            found = search.find(q, pool, limit=50)[0] if q else pool
             if not found:
                 return "Не нашёл такие записи. Назовите их по-другому."
             for r in found:
                 storage.update(user, r["id"], status=new_status)
             return f"{'Отмечено выполненными' if done else 'Возвращено в работу'}: {len(found)}."
-        if not cmd.query and sess is not None and sess.last_id:      # «отметь её выполненной», «отмени выполнение»
+        if not q and sess is not None and sess.last_id:      # «отметь её выполненной», «отмени выполнение»
             found = [r for r in pool if r["id"] == sess.last_id]
             if found:
                 return apply(found[0])
-        if not cmd.query and not done:
+        if not q and not done:
             if len(pool) == 1:
                 return apply(pool[0])
             return self._ask_choice(sess, op, pool, now, "Какую запись вернуть в работу? Выполненные:", cmd)
-        found, _mode = search.find(cmd.query or "", pool, limit=5)
-        if not cmd.query or not found:
+        found, _mode = search.find(q, pool, limit=5)
+        if not found and done and q:                 # возможно, её уже отметили раньше
+            already = [r for r in storage.all_items(user) if r["status"] == "done"]
+            if search.find(q, already, limit=1)[0]:
+                return "Эта запись уже выполнена."
+        if not q or not found:
             return "Не нашёл такую невыполненную запись. Назовите её по-другому." if done else "Не нашёл такую выполненную запись. Назовите её по-другому."
         if len(found) > 1:
             return self._ask_choice(sess, op, found, now, "Нашёл несколько подходящих записей.", cmd)
@@ -485,8 +505,9 @@ class Assistant:
             return None, "Записей пока нет."
         if (cmd.ref or "").startswith("ord:"):
             return self._ord_item(cmd, sess, user)
-        if cmd.query:
-            found, mode = search.find(cmd.query, pool, limit=5)
+        q = target_query(cmd)
+        if q:
+            found, mode = search.find(q, pool, limit=5)
             if not found:
                 return None, "Не нашёл такую запись. Назовите её по-другому."
             if mode != "exact":

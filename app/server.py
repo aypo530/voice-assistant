@@ -105,11 +105,15 @@ def service_worker():
 
 
 @app.get("/api/health")
-def health():
+def health(request: Request):
     cloud = llm.status()
+    try:                                     # сколько записей сервер видит для этого браузера (диагностика)
+        mine = len(storage.all_items(_uid(request)))
+    except storage.StorageError:
+        mine = -1
     return {"status": "ok", "cloud": cloud, "mode": llm.current_mode(), "server_key": bool(config.GIGACHAT_AUTH_KEY),
             "token_left": llm.token_left(), "local_stt": stt_local.state(), "local_embed": search.local_state(),
-            "multi_user": config.MULTI_USER}
+            "multi_user": config.MULTI_USER, "items": mine, "data_file": str(config.DATA_FILE)}
 
 
 class KeyIn(BaseModel):

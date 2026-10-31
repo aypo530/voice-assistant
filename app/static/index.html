@@ -182,7 +182,7 @@ window.addEventListener('load', async () => {
 });
 
 // ---------- автономный режим: при потере связи с сервером всё работает прямо в браузере ----------
-let restoreDone = false, deviceMode = false, probeTimer = null, syncing = false;
+let restoreDone = false, lastRestore = 0, deviceMode = false, probeTimer = null, syncing = false;
 const netErr = e => e && (e.name === 'TypeError' || e.name === 'AbortError');
 function fetchT(path, init, ms) {
   const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
@@ -259,7 +259,10 @@ async function loadMode() {
       box.className = 'mode cloud'; tx.textContent = '☁️ Авто: облачный режим (GigaChat), максимальная точность. Если GigaChat станет недоступен, ассистент сам переключится на локальный режим.';
     } else {
       box.className = 'mode local';
-      tx.textContent = '💻 Авто: локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
+      let msg = '💻 Авто: локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
+      // Ключ сохранён в браузере, но GigaChat его не принимает — обычно после перевыпуска ключа в кабинете.
+      if (h.cloud.state === 'auth' && getKey()) msg += ' Сохранённый в браузере ключ не подходит — нажмите «🔑 Ключ» → «Удалить ключ», чтобы работать с ключом сервера.';
+      tx.textContent = msg;
     }
   } catch (e) { if (healthFails < 1) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; } }
 }
@@ -430,15 +433,19 @@ async function loadItems() {
     if (q) { const r = await api('/api/search?q=' + encodeURIComponent(q)); items = r.items; searchMode = r.mode; }
     else {
       items = await api('/api/items'); searchMode = '';
-      if (!deviceMode && !restoreDone && Array.isArray(items)) {      // сервер мог перезапуститься и забыть записи — вернём их из копии на устройстве
-        restoreDone = true;
+      // Сервер мог перезапуститься и забыть записи (файл данных живёт внутри контейнера) — возвращаем их
+      // из копии на устройстве. Проверяем не один раз за сессию, а периодически: контейнер может упасть снова.
+      if (!deviceMode && Array.isArray(items) && Date.now() - lastRestore > 30000) {
+        lastRestore = Date.now();
         const lost = Offline.pendingChanges() ? [] : Offline.missingOnServer(items);
         if (lost.length) {
           try {
             await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({items: lost.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})});
-            items = await api('/api/items'); addMsg('bot', 'Сервер был перезапущен — я вернул ваши записи из копии на этом устройстве: ' + lost.length + '.');
-          } catch (e) {}
+            items = await api('/api/items');
+            if (!restoreDone) addMsg('bot', 'Сервер был перезапущен — я вернул ваши записи из копии на этом устройстве: ' + lost.length + '.');
+            restoreDone = true;
+          } catch (e) { addMsg('bot', 'Не удалось вернуть записи на сервер: ' + ((e && e.message) || e)); }
         }
       }
       if (!deviceMode) Offline.seed(items);
