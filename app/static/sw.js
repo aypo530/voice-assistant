@@ -1,5 +1,5 @@
 /* Service worker: хранит страницу и offline.js в кэше, чтобы приложение открывалось и работало без связи с сервером. */
-const CACHE = 'assistant-shell-v2';
+const CACHE = 'assistant-shell-v1';
 const SHELL = ['/', '/offline.js'];
 
 self.addEventListener('install', (e) => {

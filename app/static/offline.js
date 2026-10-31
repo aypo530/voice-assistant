@@ -803,7 +803,8 @@ function doCreate(cmd, now, s) {
   if (repeat) return doCreateRepeating(kind, title, d, t, repeat, now, s);
   const dd = d ? iso(d) : null;
   if (store.findDuplicate(kind, title, dd, t)) {
-    return [`Такая ${label} уже есть: «${title}»` + (d || t ? ` — ${whenPhrase(d, t, today)}.` : '.'), 'create'];
+    const dupPrefix = kind === 'reminder' ? 'Такое' : 'Такая';
+    return [`${dupPrefix} ${label} уже есть: «${title}»` + (d || t ? ` — ${whenPhrase(d, t, today)}.` : '.'), 'create'];
   }
   const conflicts = kind === 'meeting' && dd && t ? store.meetingsAt(dd, t) : [];
   const added = store.add(kind, title, dd, t, `${iso(today)}T${now.hm}:00`);

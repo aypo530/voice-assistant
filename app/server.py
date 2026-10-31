@@ -1,12 +1,7 @@
-"""HTTP-слой (FastAPI): принимает текст или аудио, отдаёт ответ ассистента; правка и удаление записей. Логики здесь нет.
-
-Облако — GigaChat: токен обновляется автоматически (gigachat.token), в фоне работает продление,
-поэтому запрос пользователя не тратит время на OAuth.
-"""
+"""HTTP-слой (FastAPI): принимает текст или аудио, отдаёт ответ ассистента; правка и удаление записей. Логики здесь нет."""
 import csv
 import io
 import logging
-import re
 import threading
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -18,7 +13,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 import config
-import gigachat
 import llm
 import search
 import storage
@@ -36,13 +30,11 @@ async def lifespan(_: FastAPI):
         storage.init()
     except storage.StorageError as e:
         log.error("%s", e)
-    if config.LEGACY_GEMINI_KEY:
-        log.warning("В окружении остался GEMINI_API_KEY — он больше не используется. Задайте GIGACHAT_CREDENTIALS.")
     if llm.has_key():
-        gigachat.start_keepalive()          # токен GigaChat продлевается заранее, в фоне
         threading.Thread(target=llm.probe, daemon=True, name="gigachat-probe").start()
+        llm.start_token_refresher()          # токен живёт 30 минут: обновляем заранее, в фоне
     else:
-        log.warning("GIGACHAT_CREDENTIALS не задан — работаю в локальном режиме (точность ниже).")
+        log.warning("GIGACHAT_AUTH_KEY не задан — работаю в локальном режиме (точность ниже).")
     if config.PRELOAD_LOCAL:
         stt_local.preload_async()
         search.preload_async()
@@ -53,9 +45,10 @@ app = FastAPI(title="Голосовой ассистент задач и вст�
 
 
 class UserKeyMiddleware:
-    """Кладёт ключ GigaChat пользователя (заголовок X-LLM-Key) в контекст запроса. Ключ нигде не сохраняется и не логируется.
+    """Кладёт ключ GigaChat пользователя (заголовок X-GigaChat-Key) в контекст запроса.
 
-    X-Gemini-Key принимается для совместимости со старой страницей, которая могла остаться в кэше браузера.
+    Ключ живёт только в контексте запроса: не сохраняется на диск и не попадает в логи.
+    Заголовок X-Gemini-Key принимается для совместимости со страницей, сохранённой в кеше браузера.
     """
 
     def __init__(self, inner):
@@ -64,7 +57,7 @@ class UserKeyMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             for k, v in scope.get("headers", []):
-                if k in (b"x-llm-key", b"x-gemini-key"):
+                if k in (b"x-gigachat-key", b"x-gemini-key"):
                     llm.set_request_key(v.decode("latin-1"))
                 elif k == b"x-mode":
                     llm.set_request_mode(v.decode("latin-1").strip().lower())
@@ -114,10 +107,9 @@ def service_worker():
 @app.get("/api/health")
 def health():
     cloud = llm.status()
-    return {"status": "ok", "provider": "gigachat", "cloud": cloud, "mode": llm.current_mode(),
-            "server_key": bool(config.GIGACHAT_CREDENTIALS), "model": llm.current_model_name(),
-            "token_ttl": gigachat.token_ttl() if llm.has_key() else None,
-            "local_stt": stt_local.state(), "local_embed": search.local_state(), "multi_user": config.MULTI_USER}
+    return {"status": "ok", "cloud": cloud, "mode": llm.current_mode(), "server_key": bool(config.GIGACHAT_AUTH_KEY),
+            "token_left": llm.token_left(), "local_stt": stt_local.state(), "local_embed": search.local_state(),
+            "multi_user": config.MULTI_USER}
 
 
 class KeyIn(BaseModel):
@@ -126,11 +118,10 @@ class KeyIn(BaseModel):
 
 @app.post("/api/key/check")
 async def key_check(body: KeyIn):
-    """Проверяет введённый пользователем ключ GigaChat (Authorization key). Ничего не сохраняет."""
+    """Проверяет введённый пользователем ключ авторизации GigaChat. Ничего не сохраняет."""
     key = body.key.strip()
-    if not key or len(key) > 400 or re.search(r"\s", key):
-        return {"state": "auth",
-                "message": "Это не похоже на ключ GigaChat: вставьте Authorization key (Base64) или client_id:client_secret."}
+    if not key or len(key) > 400:
+        return {"state": "auth", "message": "Это не похоже на ключ авторизации GigaChat."}
     return await run_in_threadpool(llm.check_key, key)
 
 

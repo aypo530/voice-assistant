@@ -1,8 +1,7 @@
 """Запуск: python run.py (его же вызывают start.bat / start.sh).
 
 Сам делает всё нужное: доустанавливает библиотеки (при первом запуске), стартует сервер, открывает браузер.
-Ключ GigaChat необязателен: без него (или если облако недоступно) ассистент работает локально.
-GigaChat работает из России без VPN — достаточно ключа авторизации из личного кабинета Сбера.
+Ключ GigaChat необязателен: без него (или если GigaChat недоступен) ассистент работает локально.
 """
 import importlib
 import os
@@ -15,8 +14,8 @@ import webbrowser
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
-CORE = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"), ("httpx", "httpx"),
-        ("dotenv", "python-dotenv"), ("tzdata", "tzdata")]
+CORE = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"), ("requests", "requests"),
+        ("certifi", "certifi"), ("dotenv", "python-dotenv"), ("tzdata", "tzdata")]
 LOCAL = [("faster_whisper", "faster-whisper"), ("fastembed", "fastembed")]
 
 
@@ -68,13 +67,12 @@ def main() -> None:
     port = free_port(config.PORT)
     url = f"http://127.0.0.1:{port}"
     print(f"\nАссистент запущен: {url}\nДанные сохраняются в файл: {config.DATA_FILE}")
-    if config.GIGACHAT_CREDENTIALS:
-        print("Режим: облачный (GigaChat). Если облако недоступно (нет сети, лимит) — ассистент сам переключится\n"
-              "на локальный режим: ответ придёт без задержки, но понимание запросов и распознавание речи будут менее точными.")
+    if config.GIGACHAT_AUTH_KEY:
+        print("Режим: облачный (GigaChat). Если GigaChat недоступен или исчерпан лимит — ассистент сам переключится\n"
+              "на локальный режим: ответ придёт без задержки, но понимание запросов будет менее точным.")
     else:
         print("Режим: локальный (ключ GigaChat не задан). Точность ниже, чем в облачном режиме.\n"
-              "Ключ можно ввести в окне при входе на сайт или в файле .env (GIGACHAT_CREDENTIALS=...) — он берётся\n"
-              "в личном кабинете GigaChat API: developers.sber.ru → проект → Настройки API → Authorization key.")
+              "Ключ авторизации можно ввести в окне при входе на сайт или положить в файл .env (GIGACHAT_AUTH_KEY=...)")
     print("При первом запуске локальные модели скачиваются в фоне (нужен интернет, потом — офлайн).")
     print("Не закрывайте это окно, пока работаете. Закройте его (или Ctrl+C), чтобы остановить.\n")
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()

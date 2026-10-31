@@ -2,7 +2,7 @@
 
 Все обязательные проверки (хватает ли данных, не дубль ли, не в прошлом ли) — здесь, в коде, а не в LLM,
 поэтому поведение предсказуемо и тестируется. Режимы:
-  • облачный: GigaChat (речь + смысл одним запросом);
+  • облачный: GigaChat (речь + смысл одним запросом: аудио уходит вложением в модель);
   • локальный: faster-whisper + правила (localnlu) — включается автоматически, если GigaChat недоступен.
 """
 import logging
@@ -72,7 +72,10 @@ class Assistant:
 
     # ---------- понимание запроса ----------
     def _understand(self, sess: Session, now: datetime, text, audio, mime):
-        """Возвращает (команда, расшифровка, режим 'cloud'|'local'). Бросает stt_local.STTUnavailable."""
+        """Возвращает (команда, расшифровка, режим 'cloud'|'local').
+
+        Бросает stt_local.STTUnavailable (нет локального распознавания) и OnlineUnavailable (выбран строгий онлайн).
+        """
         mode = llm.current_mode()
         if mode == "online" and not llm.has_key():
             raise OnlineUnavailable("Выбран онлайн-режим, но ключ GigaChat не задан. Введите ключ (кнопка «🔑 Ключ») или выберите режим «Авто» или «Офлайн».")
@@ -82,6 +85,29 @@ class Assistant:
             try:
                 cmd = llm.parse(now, list(sess.history), text=text, audio=audio, mime=mime)
                 return cmd, (cmd.transcript or text or "").strip(), "cloud"
+            except llm.LLMAudioUnavailable as e:
+                # Модель/тариф не берёт аудио: распознаём речь локально, а понимаем — по-прежнему в облаке,
+                # поэтому точность разбора запроса не падает.
+                log.info("GigaChat не обработал аудио (%s) — распознаю речь локально, понимаю в облаке", e)
+                try:
+                    heard = stt_local.transcribe(audio, mime)
+                except stt_local.STTUnavailable:
+                    if mode == "online":
+                        raise OnlineUnavailable("Онлайн-режим: GigaChat не может обработать аудио, а локальное "
+                                                "распознавание речи не готово. Напишите запрос текстом или выберите «Авто».")
+                    raise
+                if not heard:
+                    return Command(intent="other", transcript=""), "", "cloud"
+                try:
+                    cmd = llm.parse(now, list(sess.history), text=heard)
+                    return cmd, (cmd.transcript or heard).strip(), "cloud"
+                except llm.LLMError as e2:
+                    if mode == "online":
+                        raise OnlineUnavailable("Онлайн-режим: GigaChat не ответил. " + llm.fallback_message() + " Выберите «Авто» или «Офлайн».") from e2
+                    log.warning("Облако не сработало (%s) — перехожу на локальный режим", e2)
+                    cmd = localnlu.parse(heard, now, sess.pending)
+                    cmd.transcript = heard
+                    return cmd, heard, "local"
             except llm.LLMError as e:
                 if mode == "online":
                     raise OnlineUnavailable("Онлайн-режим: GigaChat не ответил. " + llm.fallback_message() + " Выберите «Авто» или «Офлайн».") from e
@@ -198,7 +224,8 @@ class Assistant:
 
         dd = d.isoformat() if d else None
         if storage.find_duplicate(user, kind, title, dd, t):
-            return f"Такая {label} уже есть: «{title}»" + (f" — {when_phrase(d, t, today)}." if d or t else "."), "create"
+            prefix = {"task": "Такая", "meeting": "Такая", "reminder": "Такое"}.get(kind, "Такая")
+            return f"{prefix} {label} уже есть: «{title}»" + (f" — {when_phrase(d, t, today)}." if d or t else "."), "create"
 
         conflicts = storage.find_meetings_at(user, dd, t) if kind == "meeting" and dd and t else []
         added = storage.add_item(user, kind, title, dd, t, now.isoformat(timespec="seconds"))

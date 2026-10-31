@@ -19,7 +19,7 @@ from textutil import match_score, query_stems, words
 log = logging.getLogger("search")
 
 # Минимальная похожесть для «по смыслу» (подбирается под модель; можно править при необходимости).
-_FLOOR = {"gigachat": config.SEARCH_FLOOR_CLOUD, "local-embed": 0.35, "ngram": 0.18}
+_FLOOR = {"gigachat": config.GIGACHAT_EMBED_FLOOR, "local-embed": 0.35, "ngram": 0.18}
 
 # Группы синонимов: корни слов, считающиеся близкими по смыслу (используется только уровнем 3).
 SYNONYMS = [
@@ -128,7 +128,7 @@ def local_state() -> dict:
 
 
 def _embed(provider: str, texts: list, is_query: bool) -> list:
-    """Эмбеддинги с кэшем. GigaChat кодирует запрос и документы одинаково, поэтому кэш общий."""
+    """Эмбеддинги с кэшем (облачные — GigaChat, локальные — fastembed)."""
     todo = [t for t in dict.fromkeys(texts) if (provider, is_query, t) not in _cache]
     if todo:
         if provider == "gigachat":

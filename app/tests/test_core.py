@@ -1,11 +1,11 @@
 """Бизнес-логика, хранилище, поиск, переключение облако → локально. Без сети."""
+import time
 import unittest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import helpers  # noqa: F401
 import config
-import gigachat as gc
 import llm
 import search
 import storage
@@ -95,12 +95,12 @@ class LocalFlow(Base):
 class CloudFallback(Base):
     def setUp(self):
         super().setUp()
-        self._orig = (config.GIGACHAT_CREDENTIALS, llm.parse, llm.usable)
-        config.GIGACHAT_CREDENTIALS = "test-key"
+        self._orig = (config.GIGACHAT_AUTH_KEY, llm.parse, llm.usable)
+        config.GIGACHAT_AUTH_KEY = "test-key"
         llm.usable = lambda: True
 
     def tearDown(self):
-        config.GIGACHAT_CREDENTIALS, llm.parse, llm.usable = self._orig
+        config.GIGACHAT_AUTH_KEY, llm.parse, llm.usable = self._orig
 
     def test_cloud_used_when_available(self):
         llm.parse = lambda now, h, text=None, audio=None, mime="": Command(intent="create", kind="task", title="Облачная задача", transcript=text)
@@ -113,8 +113,8 @@ class CloudFallback(Base):
         r = self.say("Напомни завтра в 10 утра позвонить Ивану")
         self.assertEqual(r["engine"], "local"); self.assertIn("Записано", r["reply"]); self.assertTrue(r["ok"])
 
-    def test_auth_error_is_also_fallback(self):
-        def blocked(*a, **k): raise llm.LLMAuthError("Unauthorized")
+    def test_scope_error_is_also_fallback(self):
+        def blocked(*a, **k): raise llm.LLMAuthError("доступ запрещён: проверьте scope проекта")
         llm.parse = blocked
         self.assertEqual(self.say("что у меня сегодня")["engine"], "local")
 
@@ -290,8 +290,8 @@ class VoiceEdit(Base):
         self.assertEqual(len(storage.all_items("s1")), 1)
 
     def test_cloud_update_intent(self):
-        orig = (config.GIGACHAT_CREDENTIALS, llm.parse, llm.usable)
-        config.GIGACHAT_CREDENTIALS = "k"; llm.usable = lambda: True
+        orig = (config.GIGACHAT_AUTH_KEY, llm.parse, llm.usable)
+        config.GIGACHAT_AUTH_KEY = "k"; llm.usable = lambda: True
         try:
             llm.parse = lambda now, h, text=None, audio=None, mime="": Command(intent="create", kind="meeting", title="Встреча с Иваном", date=tomorrow(), time="10:00", transcript=text)
             self.say("встреча")
@@ -299,60 +299,142 @@ class VoiceEdit(Base):
             self.assertIn("Перенёс", self.say("а сдвинь на двенадцать")["reply"])
             self.assertEqual(storage.all_items("s1")[0]["due_time"], "12:00")
         finally:
-            config.GIGACHAT_CREDENTIALS, llm.parse, llm.usable = orig
+            config.GIGACHAT_AUTH_KEY, llm.parse, llm.usable = orig
 
 
-class ModelFallback(Base):
-    """Перебор моделей GigaChat: перегруженная или неизвестная модель не ломает запрос."""
+class TokenLifecycle(Base):
+    """Токен GigaChat живёт 30 минут: кешируется, обновляется заранее и один раз перезапрашивается при 401."""
 
-    def _run(self, behavior):
-        calls = []
-        orig = gc.chat
+    def setUp(self):
+        super().setUp()
+        self._orig = (llm._fetch_token, llm._http)
+        self.calls = []
 
-        def fake(cred, model, messages, **kw):
-            calls.append(model)
-            action = behavior.get(model, "ok")
-            if action == "busy":
-                raise gc.BusyError("429", 429)
-            if action == "unknown":
-                raise gc.BadRequest("model not found", 404)
-            if action == "auth":
-                raise gc.AuthError("Unauthorized", 401)
-            return "ok"
+    def tearDown(self):
+        llm._fetch_token, llm._http = self._orig
+        with llm._tokens_lock:
+            llm._tokens.clear()
+        llm._schema_ok.clear()
+        llm._best.clear()
 
-        gc.chat = fake
-        tok = llm.set_request_key("dGVzdDp0ZXN0")          # base64("test:test")
+    def test_token_cached_and_refreshed_before_expiry(self):
+        def fetch(key):
+            self.calls.append(key)
+            return {"access_token": f"t{len(self.calls)}", "exp": time.time() + 1800}
+        llm._fetch_token = fetch
+        self.assertEqual(llm.token("key-1"), "t1")
+        self.assertEqual(llm.token("key-1"), "t1")           # из кеша: сервер авторизации не дёргаем
+        self.assertEqual(len(self.calls), 1)
+        with llm._tokens_lock:                              # токен подходит к концу — обновляем заранее
+            llm._tokens["key-1"]["exp"] = time.time() + 10
+        self.assertEqual(llm.token("key-1"), "t2")
+        self.assertEqual(len(self.calls), 2)
+        self.assertGreater(llm.token("key-1", force=True), "")   # force — всегда новый
+
+    def test_each_key_has_its_own_token(self):
+        def fetch(key):
+            self.calls.append(key)
+            return {"access_token": "for:" + key, "exp": time.time() + 1800}
+        llm._fetch_token = fetch
+        self.assertEqual(llm.token("a"), "for:a")
+        self.assertEqual(llm.token("b"), "for:b")
+        self.assertEqual(llm.token("a"), "for:a")           # ключ «a» не перетёрт ключом «b»
+        self.assertEqual(len(self.calls), 2)
+
+    def test_expires_at_units(self):
+        now = time.time()
+        self.assertAlmostEqual(llm._as_unix(int((now + 1800) * 1000)), now + 1800, delta=2)   # миллисекунды
+        self.assertAlmostEqual(llm._as_unix(int(now + 1800)), now + 1800, delta=2)           # секунды
+        self.assertGreater(llm._as_unix(None), now)                                          # мусор → запас 30 мин
+
+    def test_401_refreshes_token_and_repeats_request(self):
+        class Resp:
+            def __init__(self, code, payload):
+                self.status_code, self._p, self.text = code, payload, str(payload)
+            def json(self):
+                return self._p
+
+        seen = []
+        def fetch(key):
+            return {"access_token": "fresh", "exp": time.time() + 1800}
+
+        def fake_http(method, url, **kw):
+            auth = kw["headers"]["Authorization"]
+            seen.append(auth)
+            if auth == "Bearer old":
+                return Resp(401, {"message": "Token is expired"})
+            return Resp(200, {"choices": [{"message": {"content": "{\"intent\": \"other\"}"}}]})
+        llm._fetch_token = fetch
+        llm._http = fake_http
+        ctx = llm.set_request_key("test-key")
         try:
-            llm._model.clear()
-            llm._no_schema.clear()
-            return calls, llm._generate(["x"], "s", False)
+            with llm._tokens_lock:
+                llm._tokens["test-key"] = {"access_token": "old", "exp": time.time() + 1800}
+            text = llm._chat_once("GigaChat-2", [{"role": "user", "content": "x"}], None, None)
         finally:
-            gc.chat = orig
-            llm._req_key.reset(tok)
+            llm._req_key.reset(ctx)
+        self.assertIn("intent", text)
+        self.assertEqual(seen, ["Bearer old", "Bearer fresh"])   # повторили ровно один раз с новым токеном
 
-    def test_busy_primary_falls_back_to_next_model(self):
-        fallback = config.GIGACHAT_FALLBACK_MODELS[0]
-        calls, out = self._run({config.GIGACHAT_MODEL: "busy", fallback: "ok"})
-        self.assertEqual(out, "ok")
-        self.assertEqual(calls[:3], [config.GIGACHAT_MODEL, config.GIGACHAT_MODEL, fallback])
+    def test_model_fallback_when_first_unavailable(self):
+        tried = []
+        def fake_chat(model, messages, attachments, schema):
+            tried.append(model)
+            if model == config.GIGACHAT_MODEL:
+                raise llm._BadRequest(404, "model not found")
+            return '{"intent":"other"}'
+        orig = llm._chat_once
+        llm._chat_once = fake_chat
+        try:
+            llm._call([{"role": "user", "content": "x"}])
+        finally:
+            llm._chat_once = orig
+        self.assertEqual(tried[0], config.GIGACHAT_MODEL)
+        self.assertEqual(llm._best["text"], tried[1])      # запомнили рабочую модель для следующих запросов
 
-    def test_unknown_model_is_skipped(self):
-        fallback = config.GIGACHAT_FALLBACK_MODELS[0]
-        calls, out = self._run({config.GIGACHAT_MODEL: "unknown", fallback: "ok"})
-        self.assertEqual((out, calls[:2]), ("ok", [config.GIGACHAT_MODEL, fallback]))
+    def test_audio_unsupported_goes_to_local_stt(self):
+        orig = (llm._chat_once, llm._upload, llm._delete_file)
+        llm._upload = lambda audio, mime: "file-1"
+        llm._delete_file = lambda fid: None
+        def fake_chat(model, messages, attachments, schema):
+            raise llm._BadRequest(422, "model does not support audio")
+        llm._chat_once = fake_chat
+        try:
+            with self.assertRaises(llm.LLMAudioUnavailable):
+                llm.parse(datetime.now(ZoneInfo("Europe/Moscow")), [], audio=b"0" * 3000)
+        finally:
+            llm._chat_once, llm._upload, llm._delete_file = orig
+            llm._audio_block["until"] = 0.0
 
-    def test_auth_error_marks_cloud_down(self):
-        with self.assertRaises(llm.LLMAuthError):
-            self._run({config.GIGACHAT_MODEL: "auth"})
-        self.assertFalse(llm.usable())
-        llm._states.clear()
+
+class AudioFallbackToLocalSTT(Base):
+    """GigaChat не берёт аудио — речь распознаём локально, а понимаем всё равно в облаке."""
+
+    def test_local_stt_and_cloud_understanding(self):
+        orig = (config.GIGACHAT_AUTH_KEY, llm.parse, llm.usable, stt_local.transcribe)
+        config.GIGACHAT_AUTH_KEY = "k"; llm.usable = lambda: True
+        calls = []
+        def fake_parse(now, history, text=None, audio=None, mime=""):
+            calls.append((text, bool(audio)))
+            if audio:
+                raise llm.LLMAudioUnavailable("модель без аудио")
+            return Command(intent="create", kind="task", title="Облачная задача", transcript=text)
+        llm.parse = fake_parse
+        stt_local.transcribe = lambda a, m="": "купить хлеб"
+        try:
+            r = self.a.handle("s1", None, audio=b"0" * 3000)
+        finally:
+            config.GIGACHAT_AUTH_KEY, llm.parse, llm.usable, stt_local.transcribe = orig
+        self.assertEqual((r["engine"], r["transcript"]), ("cloud", "купить хлеб"))
+        self.assertIn("Облачная задача", r["reply"])
+        self.assertEqual(calls, [(None, True), ("купить хлеб", False)])
 
 
 class UserMode(Base):
     def setUp(self):
         super().setUp()
-        self._orig = (config.GIGACHAT_CREDENTIALS, llm.parse)
-        config.GIGACHAT_CREDENTIALS = "k"
+        self._orig = (config.GIGACHAT_AUTH_KEY, llm.parse)
+        config.GIGACHAT_AUTH_KEY = "k"
         self.calls = []
         def fake(now, h, text=None, audio=None, mime=""):
             self.calls.append(text)
@@ -361,7 +443,7 @@ class UserMode(Base):
         llm._states.clear()
 
     def tearDown(self):
-        config.GIGACHAT_CREDENTIALS, llm.parse = self._orig
+        config.GIGACHAT_AUTH_KEY, llm.parse = self._orig
         llm._req_mode.set("auto")
 
     def test_offline_never_calls_cloud(self):
@@ -392,7 +474,7 @@ class UserKey(Base):
             self.assertFalse(llm.usable())
         finally:
             llm._req_key.reset(tok)
-        self.assertEqual(llm.current_key(), config.GIGACHAT_CREDENTIALS)
+        self.assertEqual(llm.current_key(), config.GIGACHAT_AUTH_KEY)
         self.assertFalse(llm.has_key())          # у сервера ключа нет, чужое состояние не протекло
         self.assertEqual(llm.status()["state"], "no_key")
 

@@ -1,0 +1,13 @@
+# Конфигурация для Amvera Cloud (https://amvera.ru). Проект собирается из Dockerfile.
+# Секреты (GIGACHAT_AUTH_KEY) задавайте в панели Amvera → «Переменные» — в git их хранить нельзя.
+meta:
+  environment: docker
+  toolchain:
+    name: docker
+
+build:
+  dockerfile: Dockerfile
+
+run:
+  persistenceMount: /data      # сюда монтируется постоянное хранилище: там лежит assistant_data.csv
+  containerPort: 8000          # столько же в ENV PORT в Dockerfile
