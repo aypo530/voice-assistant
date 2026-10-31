@@ -216,12 +216,16 @@ async function api(path, opts = {}) {
   if (deviceMode) return Offline.call(path, opts);
   const isHealth = path.startsWith('/api/health');
   // Бесплатный сервер медленный (холодный старт, распознавание речи): таймауты с запасом, чтобы не уходить в автономный режим зря.
-  const ms = path.startsWith('/api/voice') ? 120000 : isHealth ? 12000 : path.startsWith('/api/message') ? 45000 : 25000;
+  const ms = path.startsWith('/api/voice') ? 240000 : isHealth ? 12000 : path.startsWith('/api/message') ? 45000 : 25000;
   let r;
   try { r = await fetchT(path, {...opts, headers: {'X-Session-Id': sid, ...gkeyHeader(), ...(opts.headers || {})}}, ms); }
   catch (e) {
     if (netErr(e)) {
       if (isHealth && ++healthFails < 3 && navigator.onLine !== false) throw e;   // фоновая проверка: три сбоя подряд, и только потом автономный режим
+      if (e.name === 'AbortError' && path.startsWith('/api/voice')) {
+        // сервер не «упал» — он ещё обрабатывает запись; уходить в автономный режим из-за этого нельзя
+        throw new Error('Сервер не успел обработать запись за 4 минуты (обычно мешает долгое распознавание речи на слабом сервере). Скажите короче или напишите текстом — связь есть.');
+      }
       enterDevice(); return Offline.call(path, opts);
     }
     throw e;
@@ -584,7 +588,7 @@ async function onRecStop() {
   try {
     const wav = await toWav16k(blob);
     showResult(await api('/api/voice', {method: 'POST', headers: {'Content-Type': 'audio/wav', 'X-Timezone': tz}, body: wav}), ph);
-  } catch (e) { ph.remove(); addMsg('bot', 'Не удалось обработать запись. Попробуйте ещё раз или напишите текстом.'); }
+  } catch (e) { ph.remove(); addMsg('bot', (e && e.message) || 'Не удалось обработать запись. Попробуйте ещё раз или напишите текстом.'); }
   setBusy(false); setStatus('');
 }
 $('cancel').onclick = () => { cancelled = true; stopRec(); };

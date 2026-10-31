@@ -83,6 +83,8 @@ _states: dict = {}
 _state_lock = threading.Lock()
 
 _req_mode: "contextvars.ContextVar[str]" = contextvars.ContextVar("assistant_mode", default="auto")
+# Таймаут текущего вызова модели: аудио ждём заметно дольше, чем текст.
+_call_timeout: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar("call_timeout", default=None)
 MODES = ("auto", "online", "offline")      # auto — облако, при сбое локально; online — только облако; offline — только локально
 
 
@@ -449,17 +451,24 @@ def _content(resp) -> str:
 
 
 def _chat_once(model: str, messages: list, attachments: Optional[list], schema: Optional[dict]) -> str:
+    timeout = _call_timeout.get()
     key = config._clean_key(current_key())
     used_schema = schema if (schema and config.GIGACHAT_STRUCTURED and _schema_ok.get(model, True)) else None
     payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 900, "stream": False}
     if attachments:
-        payload["attachments"] = attachments
+        # GigaChat принимает вложения только внутри сообщения (messages[].attachments);
+        # на верхнем уровне JSON они молча игнорируются и модель отвечает пустотой.
+        idx = next((i for i in range(len(payload["messages"]) - 1, -1, -1)
+                    if payload["messages"][i].get("role") == "user"), None)
+        if idx is not None:
+            payload["messages"][idx] = {**payload["messages"][idx], "attachments": list(attachments)}
     while True:
         body = dict(payload)
         if used_schema:
             body["response_format"] = {"type": "json_schema", "schema": used_schema, "strict": True}
         try:
-            return _content(_post("/chat/completions", key, json=body))
+            return _content(_post("/chat/completions", key, json=body,
+                                  **({"timeout": timeout} if timeout else {})))
         except _BadRequest as e:
             if used_schema:                               # модель/версия не принимает схему — просим JSON промптом
                 _schema_ok[model] = False
@@ -473,6 +482,7 @@ def _call(messages: list, attachments: Optional[list] = None, purpose: str = "te
           schema: Optional[dict] = None) -> str:
     """Запрос к модели с перебором моделей: недоступная/перегруженная заменяется следующей."""
     last: Optional[Exception] = None
+    _call_timeout.set((5, config.AUDIO_TIMEOUT_S) if purpose == "audio" else None)
     queue = _candidates(purpose)
     tried: list = []
     discovered = False
@@ -530,13 +540,18 @@ def _call_audio(messages: list, attachments: list, schema: Optional[dict]) -> st
         raise
 
 
+# GigaChat: /files требует явное назначение файла, иначе 400 «No purpose provided».
+FILE_PURPOSE = "general"
+
+
 def _upload(audio: bytes, mime: str) -> str:
     key = config._clean_key(current_key())
     ext = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/webm": "weba",
            "audio/ogg": "ogg", "audio/opus": "opus", "audio/mp4": "mp4", "audio/mp3": "mp3",
            "audio/mpeg": "mp3", "audio/x-m4a": "m4a", "audio/m4a": "m4a"}.get((mime or "").lower(), "wav")
     try:
-        resp = _post("/files", key, files={"file": (f"voice.{ext}", audio, mime or "audio/wav")})
+        resp = _post("/files", key, files={"file": (f"voice.{ext}", audio, mime or "audio/wav")},
+                     data={"purpose": FILE_PURPOSE}, timeout=(5, config.AUDIO_TIMEOUT_S))
         file_id = (resp.json() or {}).get("id")
     except _BadRequest as e:
         raise LLMAudioUnavailable(f"аудио не принято хранилищем GigaChat ({e.detail})") from e

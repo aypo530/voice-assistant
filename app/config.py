@@ -51,7 +51,9 @@ GIGACHAT_STRUCTURED = _flag("GIGACHAT_STRUCTURED", "1")     # просить у 
 GIGACHAT_TOKEN_REFRESH_S = int(os.getenv("GIGACHAT_TOKEN_REFRESH_S", "300"))   # за сколько секунд до истечения обновлять
 GIGACHAT_CA_BUNDLE = os.getenv("GIGACHAT_CA_BUNDLE", "").strip()               # свой CA-бандл (по умолчанию — встроенный)
 GIGACHAT_VERIFY_SSL = _flag("GIGACHAT_VERIFY_SSL", "1")                        # 0 — отключить проверку TLS (только для отладки)
-CLOUD_TIMEOUT_S = float(os.getenv("CLOUD_TIMEOUT_S", "20"))   # дольше ждать GigaChat не имеет смысла: дальше — локальный режим
+CLOUD_TIMEOUT_S = float(os.getenv("CLOUD_TIMEOUT_S", "20"))
+# Аудио (загрузка файла + распознавание речи моделью) идёт дольше текстового запроса — отдельный, больший таймаут.
+AUDIO_TIMEOUT_S = float(os.getenv("AUDIO_TIMEOUT_S", "90"))   # дольше ждать GigaChat не имеет смысла: дальше — локальный режим
 
 # --- локальный режим (без интернета) ---
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")           # tiny / base / small / medium
