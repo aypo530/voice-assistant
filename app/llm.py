@@ -467,6 +467,7 @@ def _chat_once(model: str, messages: list, attachments: Optional[list], schema: 
                     if payload["messages"][i].get("role") == "user"), None)
         if idx is not None:
             payload["messages"][idx] = {**payload["messages"][idx], "attachments": list(attachments)}
+    empty_retry = 0
     while True:
         body = dict(payload)
         if used_schema:
@@ -489,6 +490,10 @@ def _chat_once(model: str, messages: list, attachments: Optional[list], schema: 
             _schema_ok[model] = False
             used_schema = None
             log.info("GigaChat: модель %s вернула пустой ответ со схемой — повторяю без response_format", model)
+            continue
+        if empty_retry < 1:                           # изредка приходит 200 с пустым content — пробуем ещё раз
+            empty_retry += 1
+            log.info("GigaChat: модель %s вернула пустой ответ — повторяю запрос", model)
             continue
         log.warning("GigaChat: модель %s вернула пустой ответ", model)
         return text

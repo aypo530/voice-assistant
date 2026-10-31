@@ -29,6 +29,17 @@ KIND_LABEL = {"task": "задача", "meeting": "встреча", "reminder": "
 KIND_FILTER = {"task": ("task", "reminder"), "meeting": ("meeting",), "reminder": ("reminder",)}
 
 
+QUESTION_START = re.compile(r"^(?:а\s+)?(?:когда|во\s+сколько|в\s+котором\s+часу|где|куда|сколько|какие|какой|какая|какую|что)\b", re.I)
+EXPLICIT_CREATE = re.compile(r"\b(?:напомни\w*|напоминай\w*|поставь|поставить|добавь|добавить|создай|создать|запиши|записать|"
+                             r"запланируй|запланировать|назначь|назначить|внеси)\b", re.I)
+
+
+def looks_like_question(text: str) -> bool:
+    """«Когда нужно позвонить Ивану» — это вопрос о записи, а не поручение её создать."""
+    t = (text or "").strip()
+    return bool(t) and bool(QUESTION_START.match(t)) and not EXPLICIT_CREATE.search(t)
+
+
 def target_query(cmd: Command) -> str:
     """Фраза, по которой ищем запись: что модель назвала «query», иначе — заголовок из «title».
 
@@ -154,6 +165,13 @@ class Assistant:
             log.exception("Ошибка понимания запроса")
             return {"ok": False, "transcript": "", "intent": "error", "engine": "local",
                     "reply": "Не удалось обработать запрос. Попробуйте ещё раз или напишите текстом."}
+
+        # Вопрос о существующей записи («когда нужно позвонить Ивану») не должен превращаться
+        # в новую задачу: если облако или локальный разбор ошиблись с намерением — отвечаем поиском.
+        if cmd.intent == "create" and looks_like_question(heard):
+            probe = cmd.query or cmd.title or heard
+            if self.search_items(session_id, probe, cmd.kind)[0]:     # такая запись уже есть → это вопрос о ней
+                cmd.intent, cmd.query = "search", probe
 
         out_extra = {"engine": engine}
         if engine == "local":
