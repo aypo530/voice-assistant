@@ -169,9 +169,16 @@ $('keyok').onclick = async () => {
   $('keyok').disabled = false;
 };
 $('keyin').addEventListener('keydown', e => { if (e.key === 'Enter') $('keyok').click(); });
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   let skipped = false; try { skipped = !!sessionStorage.gskip; } catch (e) {}
-  if (!getKey() && !skipped && getMode() !== 'offline' && navigator.onLine !== false) openKeyDialog();
+  if (getKey() || skipped || getMode() === 'offline' || navigator.onLine === false) return;
+  // Ключ может быть задан на сервере (GIGACHAT_AUTH_KEY) — тогда спрашивать пользователя не о чем.
+  try {
+    const r = await fetchT('/api/health', {headers: gkeyHeader()}, 8000);
+    const h = await r.json();
+    if (h.server_key || (h.cloud && h.cloud.state === 'ok')) return;
+  } catch (e) { return; }        // сервер не ответил — не мешаем работать, спросим позже
+  openKeyDialog();
 });
 
 // ---------- автономный режим: при потере связи с сервером всё работает прямо в браузере ----------
@@ -527,10 +534,41 @@ function cleanupRec() {
   $('cancel').style.display = 'none';
   $('mic').classList.remove('rec'); $('mic').textContent = '🎤 Говорить';
 }
+const MIC_HINT = 'Разрешите микрофон: значок слева от адреса (🔒 или ⚙) → «Настройки сайта» → «Микрофон» → «Разрешить», затем перезагрузите страницу (F5) и нажмите 🎤 ещё раз.';
+async function ensureMic() {
+  if (typeof MediaRecorder === 'undefined') {
+    addMsg('bot', 'Браузер не умеет записывать звук (нет MediaRecorder). Откройте страницу в Chrome, Edge или свежем Firefox — либо пишите текстом.'); return null;
+  }
+  if (!window.isSecureContext) {
+    addMsg('bot', 'Микрофон работает только по https (или на localhost), а страница открыта по ' + location.protocol + '. Откройте адрес https://' + location.host + ' и попробуйте снова.'); return null;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    addMsg('bot', 'Браузер не даёт доступ к микрофону: в нём нет getUserMedia. Попробуйте Chrome/Edge или другой браузер.'); return null;
+  }
+  let perm = '';
+  try { perm = (await navigator.permissions.query({name: 'microphone'})).state; } catch (e) {}
+  try {
+    return await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+  } catch (e) {
+    const n = (e && e.name) || 'Error';
+    if (n === 'NotAllowedError' || n === 'SecurityError') {
+      addMsg('bot', 'Браузер заблокировал микрофон для этого сайта' + (perm === 'denied' ? ': разрешение уже стоит в положении «Блокировать», поэтому запрос даже не показывается' : '') + '. ' + MIC_HINT);
+    } else if (n === 'NotFoundError' || n === 'DevicesNotFoundError') {
+      addMsg('bot', 'Микрофон не найден: браузер не видит ни одного устройства записи. Подключите микрофон или гарнитуру и нажмите 🎤 снова.');
+    } else if (n === 'NotReadableError' || n === 'TrackStartError') {
+      addMsg('bot', 'Микрофон занят другой программой (Zoom, Discord, Telegram…) или выключен в настройках Windows. Закройте её и попробуйте снова.');
+    } else if (n === 'OverconstrainedError') {
+      addMsg('bot', 'Микрофон не поддерживает запрошенные параметры записи. Попробуйте другое устройство ввода в настройках звука.');
+    } else {
+      addMsg('bot', 'Не удалось включить микрофон (' + n + ')' + (e && e.message ? ': ' + e.message : '') + '. ' + MIC_HINT);
+    }
+    return null;
+  }
+}
 async function startRec() {
   speechSynthesis.cancel();
-  try { stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}); }
-  catch (e) { addMsg('bot', 'Нет доступа к микрофону. Разрешите его в браузере (нужен https или localhost) или пишите текстом.'); return; }
+  const mic = await ensureMic(); if (!mic) return;
+  stream = mic;
   chunks = []; rec = new MediaRecorder(stream);
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
   rec.onstop = onRecStop; rec.start(); meter(stream);
