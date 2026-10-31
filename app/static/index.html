@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Голосовой ассистент задач и встреч</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E%F0%9F%8E%99%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--text:#1d2330;--muted:#6b7385;--line:#e3e7ef;--accent:#2f6df6;--me:#e8f0ff;--bot:#f1f3f7;--rec:#e5484d;--ok:#22a559;--warn:#b7791f;--warnbg:#fff4dc}
+@media (prefers-color-scheme:dark){:root{--bg:#10131a;--card:#181c26;--text:#e7eaf2;--muted:#8d95a8;--line:#272d3b;--me:#1e2c4d;--bot:#222838;--warn:#f0c060;--warnbg:#3a2f14}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:12px 16px 16px;display:grid;gap:12px;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:100dvh}
+.mode{grid-column:1/-1;font-size:13px;padding:7px 12px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--muted)}
+.mode.cloud{color:var(--ok)}.mode.local{background:var(--warnbg);color:var(--warn);border-color:transparent}
+.main{display:grid;gap:12px;grid-template-columns:minmax(0,1fr);min-height:0;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+@media(min-width:860px){.main{grid-template-columns:minmax(0,3fr) minmax(0,2fr);grid-template-rows:minmax(0,1fr)}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+h1{font-size:17px;margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
+h1 label{font-size:13px;font-weight:400;color:var(--muted);cursor:pointer;white-space:nowrap}
+#log{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:85%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}
+.me{align-self:flex-end;background:var(--me)}.bot{align-self:flex-start;background:var(--bot)}
+.tag{display:block;font-size:11px;color:var(--warn);margin-top:3px}
+.hint{align-self:center;color:var(--muted);font-size:14px;text-align:center}
+.bar{padding:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.meter{height:5px;background:var(--line);border-radius:3px;overflow:hidden}.meter i{display:block;height:100%;width:0;background:var(--accent);transition:width .08s}
+.row{display:flex;gap:8px}
+input[type=text],input[type=date],input[type=time],select{min-width:0;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
+input[type=text]{flex:1}
+button{border:0;border-radius:12px;padding:11px 16px;font:inherit;font-weight:600;cursor:pointer;background:var(--accent);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+button.ghost{background:transparent;color:var(--muted);padding:6px 8px;font-weight:400;border-radius:8px}
+button.ghost:hover{background:var(--bg);color:var(--text)}
+button.sm{padding:7px 12px;font-size:14px;border-radius:9px}
+#mic{background:var(--ok);flex:0 0 auto}#mic.rec{background:var(--rec);animation:p 1.2s infinite}
+@keyframes p{50%{opacity:.65}}
+#status{font-size:13px;color:var(--muted);min-height:18px}
+.tools{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tools input{flex:1;min-width:120px}.tools select{padding:8px}
+#items{flex:1;overflow:auto;padding:4px 10px 12px}
+.it{display:flex;gap:8px;align-items:flex-start;padding:9px 4px;border-bottom:1px solid var(--line);font-size:14px}
+.it .body{flex:1;min-width:0}.it b{font-weight:600;word-wrap:break-word}.it small{color:var(--muted);display:block}
+.it.done b{text-decoration:line-through;color:var(--muted)}
+.it input[type=checkbox]{margin-top:4px;width:18px;height:18px;cursor:pointer;flex:0 0 auto}
+.it .act{display:flex;flex:0 0 auto}
+.edit{display:grid;gap:6px;grid-template-columns:1fr 1fr}.edit .full{grid-column:1/-1}.edit .btns{grid-column:1/-1;display:flex;gap:6px}
+.err{color:var(--rec);font-size:13px;grid-column:1/-1}
+.empty{color:var(--muted);padding:16px 6px;font-size:14px}
+#keybox{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--text);max-width:440px;width:calc(100% - 32px);padding:20px}
+#keybox::backdrop{background:rgba(0,0,0,.55)}
+#keybox h2{margin:0 0 8px;font-size:18px}#keybox p{margin:0 0 10px;font-size:14px;color:var(--muted)}
+#keybox input{width:100%;margin-bottom:8px}#keymsg{font-size:13px;min-height:18px;margin-bottom:8px}
+#keybox .row{justify-content:flex-end;flex-wrap:wrap}#keybox a{color:var(--accent)}
+.mode{display:flex;gap:10px;align-items:center;justify-content:space-between}.mode span{flex:1}
+.mode select{padding:3px 6px;font-size:12px;border-radius:8px;background:var(--bg);color:var(--text);border:1px solid var(--line)}
+.mode button{padding:3px 10px;font-size:12px;border-radius:8px;white-space:nowrap}
+#cmds{border-top:1px solid var(--line);padding:6px 12px;font-size:13px;color:var(--muted)}
+#cmds summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
+#cmds,#cmds .line,#cmds .chips{min-width:0}
+#cmds .chips{flex:1}
+#cmds .line{display:flex;align-items:center;gap:8px;margin:3px 0}
+#cmds .grp{flex:0 0 78px;font-size:12px;color:var(--muted)}
+#cmds .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:3px;scrollbar-width:thin}
+#cmds .chip{flex:0 0 auto;white-space:nowrap;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:4px 10px;font-size:13px;font-weight:400}
+#cmds .chip:hover{border-color:var(--accent);color:var(--accent)}
+#log{min-height:120px}
+#cmdbody{max-height:34vh;overflow-y:auto}
+@media(max-width:859px){            /* телефон: страница прокручивается целиком, подсказки показываются полностью */
+  .wrap{height:auto;min-height:100dvh;grid-template-rows:auto auto}
+  .main{grid-template-rows:auto auto}
+  #log{flex:none;height:42vh;min-height:220px}
+  #items{flex:none;max-height:60vh}
+  #cmdbody{max-height:none;overflow:visible}
+  #cmds .line{flex-direction:column;align-items:stretch;gap:4px}
+  #cmds .grp{flex:none}
+  #cmds .chips{flex-wrap:wrap;overflow:visible}
+  #cmds .chip{white-space:normal;text-align:left}
+}
+a.exp{font-size:13px;font-weight:400;color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="mode" class="mode"><span id="modetext">Проверяю режим работы…</span><select id="modesel" title="Режим работы"><option value="auto">Авто</option><option value="online">Онлайн</option><option value="offline">Офлайн</option></select><button class="ghost" id="keybtn" title="Ключ GigaChat (Authorization key)">🔑 Ключ</button></div>
+  <div class="main">
+  <section class="card">
+    <h1>🎙️ Голосовой ассистент <label><input type="checkbox" id="tts" checked> озвучивать ответы</label></h1>
+    <div id="log"><div class="hint">Нажмите микрофон или напишите запрос своими словами. Примеры команд — ниже, нажмите на любой.</div></div>
+    <details id="cmds" open>
+      <summary>💡 Что можно сказать</summary>
+      <div id="cmdbody"></div>
+    </details>
+    <div class="bar">
+      <div class="meter"><i id="level"></i></div>
+      <div id="status"></div>
+      <div class="row">
+        <button id="mic" title="Начать / остановить запись">🎤 Говорить</button>
+        <button id="cancel" style="display:none;background:#6b7385" title="Отменить запись">✖</button>
+        <input type="text" id="text" placeholder="Или напишите запрос…" autocomplete="off">
+        <button id="send">➤</button>
+      </div>
+    </div>
+  </section>
+  <section class="card">
+    <h1>Мои записи <a class="exp" href="#" id="exp" title="Скачать/дополнить файл с записями">скачать CSV</a> <a class="exp" href="#" id="imp" title="Загрузить записи из ранее сохранённого файла">загрузить из файла</a></h1>
+    <div class="tools">
+      <input type="text" id="q" placeholder="Поиск по смыслу…" autocomplete="off">
+      <select id="flt"><option value="all">Все</option><option value="open">Открытые</option><option value="done">Выполненные</option></select>
+    </div>
+    <div id="items"></div>
+  </section>
+  </div>
+</div>
+<dialog id="keybox">
+  <h2>🔑 Ключ GigaChat</h2>
+  <p>С ключом ассистент понимает речь и запросы намного точнее. Ключ хранится только в вашем браузере и отправляется на сервер вместе с запросами.
+     Где взять: <a href="https://developers.sber.ru/studio/workspaces" target="_blank" rel="noopener">developers.sber.ru</a> → проект GigaChat API → «Настройки API» → Authorization key.</p>
+  <p>Можно пропустить: тогда ассистент использует ключ сервера (если он задан) или работает локально, без облака. GigaChat работает из России без VPN; если он недоступен, ассистент сам продолжит локально.</p>
+  <input type="password" id="keyin" placeholder="Base64-ключ или client_id:client_secret" autocomplete="off" spellcheck="false">
+  <div id="keymsg"></div>
+  <div class="row">
+    <button class="ghost" id="keyclear" style="display:none">Удалить ключ</button>
+    <button class="ghost" id="keyskip">Пропустить</button>
+    <button id="keyok">Сохранить</button>
+  </div>
+</dialog>
+<script src="/offline.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const sid = localStorage.sid || (localStorage.sid = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)));
+const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const MAX_REC_MS = 60000;
+const KIND = {task: 'задача', meeting: 'встреча', reminder: 'напоминание'};
+let cancelled = false, busy = false, rec = null, stream = null, chunks = [], timer = null, audioCtx = null, raf = 0;
+let items = [], searchMode = '', editing = null;
+
+// ---------- ключ GigaChat (хранится только в браузере) ----------
+// ---------- режим: авто / онлайн / офлайн (выбор пользователя) ----------
+const getMode = () => { try { return ['auto', 'online', 'offline'].includes(localStorage.mode) ? localStorage.mode : 'auto'; } catch (e) { return 'auto'; } };
+$('modesel').value = getMode();
+$('modesel').onchange = e => { try { localStorage.mode = e.target.value; } catch (err) {} loadMode(); };
+// Ключ GigaChat. Старый ключ Gemini (AIza…) не подходит — его убираем, чтобы не тратить попытки на отказ.
+try { if (/^AIza/.test(localStorage.gkey || '')) delete localStorage.gkey; } catch (e) {}
+const getKey = () => { try { return localStorage.llmkey || localStorage.gkey || ''; } catch (e) { return ''; } };
+const gkeyHeader = () => ({'X-Mode': getMode(), ...(getKey() ? {'X-LLM-Key': getKey()} : {})});
+function openKeyDialog() {
+  $('keyin').value = ''; $('keymsg').textContent = ''; $('keyclear').style.display = getKey() ? '' : 'none';
+  $('keyin').placeholder = getKey() ? 'Ключ сохранён — введите новый, чтобы заменить' : 'Base64-ключ или client_id:client_secret';
+  if (!$('keybox').open) $('keybox').showModal();
+}
+$('keybtn').onclick = openKeyDialog;
+$('keyskip').onclick = () => { try { sessionStorage.gskip = '1'; } catch (e) {} $('keybox').close(); loadMode(); };
+$('keyclear').onclick = () => { try { delete localStorage.llmkey; delete localStorage.gkey; } catch (e) {} $('keybox').close(); loadMode(); };
+$('keyok').onclick = async () => {
+  const key = $('keyin').value.trim(), msg = $('keymsg');
+  if (!key) { msg.style.color = 'var(--rec)'; msg.textContent = 'Введите ключ или нажмите «Пропустить».'; return; }
+  $('keyok').disabled = true; msg.style.color = 'var(--muted)'; msg.textContent = 'Проверяю ключ…';
+  try {
+    const r = await fetch('/api/key/check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key})});
+    const d = await r.json();
+    if (d.state === 'auth') { msg.style.color = 'var(--rec)'; msg.textContent = d.message; }
+    else {
+      try { localStorage.llmkey = key; delete localStorage.gkey; } catch (e) {}
+      if (d.state === 'ok') { $('keybox').close(); loadMode(); }
+      else { msg.style.color = 'var(--warn)'; msg.textContent = 'Ключ сохранён, но проверить его не удалось (' + (d.message || 'нет связи') + ') Буду пробовать подключаться, а пока работаю локально.'; loadMode(); setTimeout(() => $('keybox').close(), 3500); }
+    }
+  } catch (e) { msg.style.color = 'var(--rec)'; msg.textContent = 'Нет связи с сервером.'; }
+  $('keyok').disabled = false;
+};
+$('keyin').addEventListener('keydown', e => { if (e.key === 'Enter') $('keyok').click(); });
+window.addEventListener('load', () => {
+  let skipped = false; try { skipped = !!sessionStorage.gskip; } catch (e) {}
+  if (!getKey() && !skipped && getMode() !== 'offline' && navigator.onLine !== false) openKeyDialog();
+});
+
+// ---------- автономный режим: при потере связи с сервером всё работает прямо в браузере ----------
+let restoreDone = false, deviceMode = false, probeTimer = null, syncing = false;
+const netErr = e => e && (e.name === 'TypeError' || e.name === 'AbortError');
+function fetchT(path, init, ms) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  return fetch(path, {...init, signal: c.signal}).finally(() => clearTimeout(t));
+}
+const authHeaders = () => ({'X-Session-Id': sid, ...gkeyHeader()});
+function enterDevice() {
+  if (deviceMode) return;
+  deviceMode = true; loadMode();
+  if (!probeTimer) probeTimer = setInterval(probeServer, 8000);
+}
+async function probeServer() {
+  try { const r = await fetchT('/api/health', {headers: authHeaders()}, 5000); if (!r.ok) return; } catch (e) { return; }
+  await trySync();
+}
+async function trySync() {
+  if (syncing) return; syncing = true;
+  try {
+    let n = 0;
+    try { n = await Offline.sync((p, i) => fetchT(p, {...i, headers: {...authHeaders(), ...((i && i.headers) || {})}}, 15000)); }
+    catch (e) { return; }                              // не вышло — остаёмся автономно и повторим позже
+    const was = deviceMode;
+    deviceMode = false; if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
+    if (n) addMsg('bot', 'Связь восстановлена. Записи, сделанные без связи, отправлены на сервер: ' + n + '.');
+    else if (was) addMsg('bot', 'Связь с сервером восстановлена.');
+    loadMode(); loadItems();
+  } finally { syncing = false; }
+}
+let healthFails = 0;
+async function api(path, opts = {}) {
+  if (deviceMode) return Offline.call(path, opts);
+  const isHealth = path.startsWith('/api/health');
+  // Бесплатный сервер медленный (холодный старт, распознавание речи): таймауты с запасом, чтобы не уходить в автономный режим зря.
+  const ms = path.startsWith('/api/voice') ? 120000 : isHealth ? 12000 : path.startsWith('/api/message') ? 45000 : 25000;
+  let r;
+  try { r = await fetchT(path, {...opts, headers: {'X-Session-Id': sid, ...gkeyHeader(), ...(opts.headers || {})}}, ms); }
+  catch (e) {
+    if (netErr(e)) {
+      if (isHealth && ++healthFails < 3 && navigator.onLine !== false) throw e;   // фоновая проверка: три сбоя подряд, и только потом автономный режим
+      enterDevice(); return Offline.call(path, opts);
+    }
+    throw e;
+  }
+  healthFails = 0;
+  if (r.status === 502 || r.status === 503 || r.status === 504) { enterDevice(); return Offline.call(path, opts); }
+  let data = null; try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((data && data.detail) || 'Ошибка сервера');
+  return data;
+}
+window.addEventListener('online', () => { if (deviceMode) probeServer(); });
+window.addEventListener('offline', () => enterDevice());
+
+// ---------- режим работы ----------
+async function loadMode() {
+  const box = $('mode'), tx = $('modetext');
+  try {
+    const h = await api('/api/health');
+    if (deviceMode || h.device) {
+      box.className = 'mode local';
+      tx.textContent = '📴 Нет связи с сервером — работаю автономно на этом устройстве: записи хранятся здесь и отправятся на сервер, когда связь появится. Точность ниже, голосовой ввод ограничен.';
+      return;
+    }
+    const m = getMode(), up = h.cloud.state === 'ok' || h.cloud.state === 'unknown';
+    if (m === 'offline') {
+      box.className = 'mode local'; tx.textContent = '💻 Офлайн-режим (выбран вами): GigaChat не используется, запросы обрабатываются на сервере правилами и локальной моделью речи. Точность ниже.';
+    } else if (m === 'online') {
+      if (up) { box.className = 'mode cloud'; tx.textContent = '☁️ Онлайн-режим (GigaChat): максимальная точность. Если GigaChat недоступен, ассистент сообщит об этом и не будет переключаться сам.'; }
+      else { box.className = 'mode local'; tx.textContent = '⚠️ Онлайн-режим выбран, но GigaChat недоступен. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '') + ' Выберите «Авто» или «Офлайн».'; }
+    } else if (up) {
+      box.className = 'mode cloud'; tx.textContent = '☁️ Авто: облачный режим (GigaChat), максимальная точность. Если GigaChat станет недоступен, ассистент сам переключится на локальный режим.';
+    } else {
+      box.className = 'mode local';
+      tx.textContent = '💻 Авто: локальный режим. ' + h.cloud.message + (h.cloud.detail ? ' [' + h.cloud.detail.slice(0, 110) + ']' : '');
+    }
+  } catch (e) { if (healthFails < 1) { box.className = 'mode'; tx.textContent = 'Нет связи с сервером.'; } }
+}
+// ---------- файл с записями: всегда один, новые записи дописываются ----------
+function idb() { return new Promise((res, rej) => { const q = indexedDB.open('assistant', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function idbGet(k) { try { const d = await idb(); return await new Promise(r => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => r(q.result); q.onerror = () => r(null); }); } catch (e) { return null; } }
+async function idbSet(k, v) { try { const d = await idb(); await new Promise(r => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = r; t.onerror = r; }); } catch (e) {} }
+async function currentCsv() {
+  try {
+    if (deviceMode) throw new Error('device');
+    const r = await fetchT('/api/export.csv', {headers: {'X-Session-Id': sid}}, 15000);
+    if (!r.ok) throw new Error('http');
+    return await r.text();
+  } catch (err) { return Offline.csv(); }          // без связи — из записей на устройстве
+}
+function pickFileText() {
+  return new Promise(res => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.csv,text/csv';
+    inp.onchange = async () => res(inp.files[0] ? await inp.files[0].text() : null);
+    inp.oncancel = () => res(null); inp.click();
+  });
+}
+function downloadText(text) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type: 'text/csv;charset=utf-8'}));
+  a.download = 'assistant_items.csv'; a.click();
+}
+async function pullIntoApp(rows, mine) {            // записи из файла, которых нет в приложении, добавляем и сюда
+  const have = new Set(mine.map(r => [r.kind, r.title.trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|')));
+  const extra = rows.filter(r => !have.has([r.kind, r.title.trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|')));
+  if (!extra.length) return 0;
+  if (deviceMode) return Offline.addRows(extra);
+  const r = await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({items: extra.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})});
+  return r.added || 0;
+}
+$('exp').onclick = async e => {
+  e.preventDefault();
+  const text = await currentCsv(), mine = Offline.parseCsv(text);
+  let res = null, how = '';
+  try {
+    if (window.showSaveFilePicker) {                // компьютер: выбираем файл один раз, дальше дописываем в него сами
+      let h = await idbGet('fh');
+      if (h) { let p = await h.queryPermission({mode: 'readwrite'}); if (p !== 'granted') p = await h.requestPermission({mode: 'readwrite'}); if (p !== 'granted') h = null; }
+      if (!h) {
+        h = await window.showSaveFilePicker({suggestedName: 'assistant_items.csv', types: [{description: 'CSV', accept: {'text/csv': ['.csv']}}]});
+        await idbSet('fh', h);
+      }
+      res = Offline.mergeCsv(await (await h.getFile()).text(), mine);
+      const w = await h.createWritable(); await w.write(res.text); await w.close();
+      how = 'Файл «' + h.name + '» дополнен';
+    } else {                                        // телефон и другие браузеры: выбираем прежний файл, скачиваем объединённый
+      let old = '';
+      if (confirm('Дополнить ранее скачанный файл?\n\nОК — выбрать его (новые записи добавятся к старым).\nОтмена — скачать новый файл.')) old = (await pickFileText()) || '';
+      res = Offline.mergeCsv(old, mine); downloadText(res.text);
+      how = old ? 'Файл дополнен и скачан (старую копию можно удалить)' : 'Файл скачан';
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    downloadText(text); addMsg('bot', 'Не удалось дополнить файл, скачан обычный. ' + (err && err.message || '')); return;
+  }
+  let pulled = 0; try { pulled = await pullIntoApp(res.rows, mine); } catch (err) {}
+  addMsg('bot', how + ': в нём ' + res.rows.length + ' записей, добавлено из приложения ' + res.added + (pulled ? ', из файла в приложение ' + pulled : '') + '.');
+  if (pulled) loadItems();
+};
+$('imp').onclick = async e => {
+  e.preventDefault();
+  const text = await pickFileText();
+  if (text === null) return;
+  const rows = Offline.parseCsv(text);
+  if (!rows.length) { addMsg('bot', 'В этом файле не нашлось записей. Нужен файл, скачанный из этого приложения.'); return; }
+  try {
+    const cur = await api('/api/items');
+    const k = r => [r.kind, r.title.trim().toLowerCase(), r.due_date || '', r.due_time || ''].join('|');
+    const byKey = new Map(cur.map(r => [k(r), r]));
+    const fresh = []; let updated = 0;
+    for (const r of rows) {
+      const ex = byKey.get(k(r));
+      if (!ex) { fresh.push(r); continue; }
+      if (ex.status !== r.status) { await api('/api/items/' + ex.id, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: r.status})}); updated++; }   // статус берём из файла
+    }
+    let added = 0;
+    if (fresh.length) {
+      if (deviceMode) added = Offline.addRows(fresh);
+      else added = (await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({items: fresh.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})})).added || 0;
+    }
+    addMsg('bot', 'Загружено из файла: новых записей ' + added + ', обновлён статус у ' + updated + '.');
+    loadItems();
+  } catch (err) { addMsg('bot', 'Не удалось загрузить файл: ' + (err && err.message || err)); }
+};
+window.addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; return ''; });   // закрыть страницу случайно нельзя
+
+
+// ---------- озвучка (локальные голоса браузера в приоритете) ----------
+$('tts').checked = localStorage.tts !== '0';
+$('tts').onchange = e => { localStorage.tts = e.target.checked ? '1' : '0'; if (!e.target.checked) speechSynthesis.cancel(); };
+function pickVoice() {
+  if (!('speechSynthesis' in window)) return null;
+  const vs = speechSynthesis.getVoices().filter(v => (v.lang || '').toLowerCase().startsWith('ru'));
+  return vs.find(v => v.localService) || vs[0] || null;
+}
+function speak(text) {
+  if (!$('tts').checked || !('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  let lines = String(text).split('\n').filter(Boolean);
+  if (lines.length > 4) lines = [...lines.slice(0, 4), 'Остальные записи — в чате.'];       // длинные списки целиком не зачитываем
+  const u = new SpeechSynthesisUtterance(lines.join('. ').replace(/[•]/g, '').replace(/^\d+\.\s+/gm, '').slice(0, 450));
+  u.lang = 'ru-RU'; const v = pickVoice(); if (v) u.voice = v; speechSynthesis.speak(u);
+}
+
+// ---------- подсказки: доступные команды всегда на виду ----------
+const COMMANDS = [
+  ['Создать', ['Напомни завтра в 10 утра позвонить Ивану', 'В пятницу нужно отправить отчёт', 'Поставь задачу купить билеты до конца недели', 'Добавь встречу с командой завтра в 15:00', 'Каждый понедельник в 10 планёрка']],
+  ['Посмотреть', ['Что у меня сегодня?', 'Какие задачи на завтра?', 'Покажи мои встречи на эту неделю', 'Покажи все задачи']],
+  ['Найти', ['Найди задачу про договор', 'Когда у меня была встреча с Иваном?']],
+  ['Изменить', ['Перенеси встречу с командой на пятницу в 11', 'А перенеси её на завтра', 'Отметь задачу про договор выполненной', 'Удали последнюю запись']],
+];
+(function () {
+  const box = $('cmdbody');
+  COMMANDS.forEach(([name, list]) => {
+    const line = document.createElement('div'); line.className = 'line';
+    const g = document.createElement('div'); g.className = 'grp'; g.textContent = name; line.appendChild(g);
+    const row = document.createElement('div'); row.className = 'chips';
+    list.forEach(t => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = t;
+      b.onclick = () => { $('text').value = t; $('text').focus(); };      // подставляет фразу в поле: можно поправить и отправить
+      row.appendChild(b);
+    });
+    line.appendChild(row); box.appendChild(line);
+  });
+  try { if (localStorage.cmds === '0') $('cmds').open = false; } catch (e) {}
+  $('cmds').addEventListener('toggle', () => { try { localStorage.cmds = $('cmds').open ? '1' : '0'; } catch (e) {} });
+})();
+
+// ---------- чат ----------
+function addMsg(role, text, tag) {
+  const hint = document.querySelector('.hint'); if (hint) hint.remove();
+  const d = document.createElement('div'); d.className = 'msg ' + role; d.textContent = text;
+  if (tag) { const s = document.createElement('span'); s.className = 'tag'; s.textContent = tag; d.appendChild(s); }
+  $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight; return d;
+}
+const setStatus = s => $('status').textContent = s;
+function setBusy(b) { busy = b; $('send').disabled = b; $('mic').disabled = b && !rec; }
+function showResult(res, placeholder) {
+  if (placeholder) { if (res.transcript) placeholder.textContent = res.transcript; else placeholder.remove(); }
+  addMsg('bot', res.reply, res.engine === 'local' ? '💻 локальный режим — точность ниже' : '');
+  speak(res.reply); loadItems(); loadMode();
+}
+async function sendText() {
+  const text = $('text').value.trim(); if (!text || busy) return;
+  $('text').value = ''; addMsg('me', text); setBusy(true); setStatus('Думаю…');
+  try {
+    showResult(await api('/api/message', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: sid, text, tz})}));
+  } catch (e) { addMsg('bot', 'Нет связи с сервером. Проверьте, что он запущен.'); }
+  setBusy(false); setStatus('');
+}
+$('send').onclick = sendText;
+$('text').addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
+
+// ---------- записи: список, отметка, правка, удаление, поиск ----------
+function fmtDate(s) {
+  if (!s) return 'без срока';
+  return new Date(s + 'T00:00').toLocaleDateString('ru-RU', {weekday: 'short', day: 'numeric', month: 'long', year: 'numeric'});
+}
+async function loadItems() {
+  try {
+    const q = $('q').value.trim();
+    if (q) { const r = await api('/api/search?q=' + encodeURIComponent(q)); items = r.items; searchMode = r.mode; }
+    else {
+      items = await api('/api/items'); searchMode = '';
+      if (!deviceMode && !restoreDone && Array.isArray(items)) {      // сервер мог перезапуститься и забыть записи — вернём их из копии на устройстве
+        restoreDone = true;
+        const lost = Offline.pendingChanges() ? [] : Offline.missingOnServer(items);
+        if (lost.length) {
+          try {
+            await api('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({items: lost.map(x => ({kind: x.kind, title: x.title, date: x.due_date, time: x.due_time, status: x.status, created_at: x.created_at}))})});
+            items = await api('/api/items'); addMsg('bot', 'Сервер был перезапущен — я вернул ваши записи из копии на этом устройстве: ' + lost.length + '.');
+          } catch (e) {}
+        }
+      }
+      if (!deviceMode) Offline.seed(items);
+    }
+    renderItems();
+  } catch (e) {}
+}
+function renderItems() {
+  const box = $('items'); box.textContent = '';
+  const f = $('flt').value;
+  const list = items.filter(r => f === 'all' || (f === 'done') === (r.status === 'done'));
+  if (searchMode === 'semantic') { const n = document.createElement('div'); n.className = 'empty'; n.textContent = 'Точных совпадений нет. Похожие по смыслу:'; box.appendChild(n); }
+  if (!list.length) {
+    const n = document.createElement('div'); n.className = 'empty';
+    n.textContent = $('q').value.trim() ? 'Ничего не найдено.' : 'Пока пусто. Создайте первую запись голосом или текстом.';
+    box.appendChild(n); return;
+  }
+  for (const r of list) box.appendChild(editing === r.id ? editRow(r) : viewRow(r));
+}
+function viewRow(r) {
+  const d = document.createElement('div'); d.className = 'it' + (r.status === 'done' ? ' done' : '');
+  const c = document.createElement('input'); c.type = 'checkbox'; c.checked = r.status === 'done'; c.title = 'Отметить выполненной';
+  c.onchange = () => patch(r.id, {status: c.checked ? 'done' : 'open'});
+  const body = document.createElement('div'); body.className = 'body';
+  const b = document.createElement('b'); b.textContent = r.title;
+  const s = document.createElement('small'); s.textContent = `${KIND[r.kind]} · ${fmtDate(r.due_date)}${r.due_time ? ', ' + r.due_time : ''}`;
+  body.append(b, s);
+  const act = document.createElement('div'); act.className = 'act';
+  const e = document.createElement('button'); e.className = 'ghost'; e.textContent = '✏️'; e.title = 'Изменить'; e.onclick = () => { editing = r.id; renderItems(); };
+  const x = document.createElement('button'); x.className = 'ghost'; x.textContent = '🗑'; x.title = 'Удалить'; x.onclick = () => remove(r);
+  act.append(e, x); d.append(c, body, act); return d;
+}
+function editRow(r) {
+  const d = document.createElement('div'); d.className = 'it';
+  const f = document.createElement('div'); f.className = 'edit body';
+  const title = Object.assign(document.createElement('input'), {type: 'text', value: r.title, maxLength: 200}); title.className = 'full';
+  const kind = document.createElement('select');
+  for (const k in KIND) kind.add(new Option(KIND[k], k, false, k === r.kind));
+  const date = Object.assign(document.createElement('input'), {type: 'date', value: r.due_date || ''});
+  const time = Object.assign(document.createElement('input'), {type: 'time', value: r.due_time || ''});
+  const err = document.createElement('div'); err.className = 'err';
+  const btns = document.createElement('div'); btns.className = 'btns';
+  const save = document.createElement('button'); save.className = 'sm'; save.textContent = 'Сохранить';
+  const cancel = document.createElement('button'); cancel.className = 'sm'; cancel.style.background = '#6b7385'; cancel.textContent = 'Отмена';
+  cancel.onclick = () => { editing = null; renderItems(); };
+  save.onclick = async () => {
+    save.disabled = true;
+    try { await api('/api/items/' + r.id, {method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title: title.value, kind: kind.value, date: date.value, time: time.value})}); editing = null; await loadItems(); }
+    catch (e) { err.textContent = e.message; save.disabled = false; }
+  };
+  btns.append(save, cancel); f.append(title, kind, date, time, err, btns); d.appendChild(f); return d;
+}
+async function patch(id, body) {
+  try { await api('/api/items/' + id, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); }
+  catch (e) { alert(e.message); }
+  loadItems();
+}
+async function remove(r) {
+  if (!confirm(`Удалить «${r.title}»?`)) return;
+  try { await api('/api/items/' + r.id, {method: 'DELETE'}); } catch (e) { alert(e.message); }
+  loadItems();
+}
+let qTimer = null;
+$('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(loadItems, 350); });
+$('flt').onchange = renderItems;
+
+// ---------- запись голоса ----------
+function encodeWav(samples, rate) {
+  const b = new ArrayBuffer(44 + samples.length * 2), v = new DataView(b);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); w(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  let o = 44; for (const s of samples) { const x = Math.max(-1, Math.min(1, s)); v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true); o += 2; }
+  return new Blob([b], {type: 'audio/wav'});
+}
+async function toWav16k(blob) {          // любой формат браузера -> WAV 16 кГц mono (подходит и GigaChat, и локальному Whisper)
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); ctx.close();
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+  const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+  return encodeWav((await off.startRendering()).getChannelData(0), 16000);
+}
+function meter(s) {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const an = audioCtx.createAnalyser(); an.fftSize = 512; audioCtx.createMediaStreamSource(s).connect(an);
+  const buf = new Uint8Array(an.fftSize);
+  (function tick() { an.getByteTimeDomainData(buf); let p = 0; for (const x of buf) p = Math.max(p, Math.abs(x - 128));
+    $('level').style.width = Math.min(100, p / 128 * 300) + '%'; raf = requestAnimationFrame(tick); })();
+}
+function cleanupRec() {
+  clearTimeout(timer); cancelAnimationFrame(raf); $('level').style.width = '0';
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (audioCtx) audioCtx.close(); stream = audioCtx = null;
+  $('cancel').style.display = 'none';
+  $('mic').classList.remove('rec'); $('mic').textContent = '🎤 Говорить';
+}
+async function startRec() {
+  speechSynthesis.cancel();
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}); }
+  catch (e) { addMsg('bot', 'Нет доступа к микрофону. Разрешите его в браузере (нужен https или localhost) или пишите текстом.'); return; }
+  chunks = []; rec = new MediaRecorder(stream);
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = onRecStop; rec.start(); meter(stream);
+  cancelled = false; $('cancel').style.display = '';
+  $('mic').classList.add('rec'); $('mic').textContent = '⏹ Отправить'; setStatus('Слушаю… (до 60 сек)');
+  timer = setTimeout(stopRec, MAX_REC_MS);
+}
+function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); }
+async function onRecStop() {
+  const blob = new Blob(chunks, {type: rec.mimeType}); rec = null; cleanupRec();
+  if (cancelled) { cancelled = false; setStatus('Запись отменена'); return; }
+  const ph = addMsg('me', '🎤 …'); setBusy(true); setStatus('Распознаю и обрабатываю…');
+  try {
+    const wav = await toWav16k(blob);
+    showResult(await api('/api/voice', {method: 'POST', headers: {'Content-Type': 'audio/wav', 'X-Timezone': tz}, body: wav}), ph);
+  } catch (e) { ph.remove(); addMsg('bot', 'Не удалось обработать запись. Попробуйте ещё раз или напишите текстом.'); }
+  setBusy(false); setStatus('');
+}
+$('cancel').onclick = () => { cancelled = true; stopRec(); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && rec) { cancelled = true; stopRec(); } });
+function deviceVoice() {
+  // Без связи с сервером остаётся только распознавание самого браузера (на части устройств оно работает локально).
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { addMsg('bot', 'В этом браузере нет распознавания речи без связи с сервером. Напишите запрос текстом.'); return; }
+  const r = new SR(); r.lang = 'ru-RU'; r.interimResults = false; r.maxAlternatives = 1;
+  try { r.processLocally = true; } catch (e) {}
+  setStatus('Слушаю…');
+  r.onresult = ev => { $('text').value = ev.results[0][0].transcript; sendText(); };
+  r.onerror = ev => addMsg('bot', 'Не удалось распознать речь без связи (' + ev.error + '). Напишите запрос текстом.');
+  r.onend = () => setStatus('');
+  try { r.start(); } catch (e) { addMsg('bot', 'Не удалось включить микрофон. Напишите запрос текстом.'); }
+}
+$('mic').onclick = () => rec ? stopRec() : (!busy && (deviceMode ? deviceVoice() : startRec()));
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if (Offline.pendingChanges()) trySync();
+if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => {};
+loadItems(); loadMode(); setInterval(loadMode, 20000);
+</script>
+</body>
+</html>
